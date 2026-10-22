@@ -1,26 +1,28 @@
 ---
-slice: S2.1
+slice: S2.2
 stateFile: docs/STATE.md
-donotCount: 4
-seededFrom: 8e05a5e
+donotCount: 5
+seededFrom: 8a9a8b2
 ---
 
-# Next slice — S2.1: map the required NVN surface
+# Next slice — S2.2: resolve NVN device property 0x60
 
 ## The next action — verbatim
 
-S2.1 — Map the required NVN surface. First business is the two window-path blockers the S1.3 boot left, each to be cleared with evidence or split: headless the boot stops at `FAIL: VI requires native macOS window` (the VI service requires the native window), windowed it stops in the frontend at `FAIL: native display link initialization` before the guest starts (`CVDisplayLinkCreateWithActiveCGDisplays` returns -6661 in a standalone probe in the same session; deprecated since macOS 15.0; environmental vs API breakage is not established). Then map the NVN surface the S0.3 `nvnBootstrapLoader` chain reaches and observe that chain at runtime: its endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` was not reached in S1.3 (both runs stopped first), and the HLE takeover (`hle_nvn.c` `HLE_FORCE`) is instrumented to log its argument when it is called. Build on the settled S1.3 base — the six-entry load set, 141,377 relocations with zero unresolved strong imports, DT_INITs and `ENTER nnMain` observed — and carry the remaining splits: the indirect first-present target and the runtime trace (S2.1), the `sub_63fea0` entry path (S3.2).
+S2.2 — Resolve NVN device property 0x60 and continue the device init chain. Both S2.1 boots cleared the window-path blockers, reached the S0.3 endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")`, resolved 516 of 523 NVN names, and both stopped at `unsupported NVN device property 0x60` (the last line of both kept logs) — `nvnDeviceGetInteger` had answered 96 properties `0x00`–`0x5f` first. The header already names the constant (`NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID`, `nvn.h:328`); what is open is the **value** to answer (the HLE table carries Tegra X1 measured values only to `0x5F`, and `0x61` `NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS` is next in the enum) and what the game does once its queries are answered. Answer `0x60`+ from a sourced value or classify the query with evidence — never invent a number — then continue tracing to the next stop point. The indirect first-present target and the runtime first-present trace carry into S2.2; the `sub_63fea0` entry path → S3.2.
 
-Gate: `python -m unittest discover -s tests` passes; every NVN surface mapping is tied to a recorded observation (the boot log or the S0.3 chain evidence) and no claim extends past it.
+Gate: `python -m unittest discover -s tests` passes; every device init claim is tied to a recorded observation; no gameplay claim.
 
-Close when the required NVN surface is mapped with each mapping tied to evidence, the two window-path blockers are resolved or split with evidence, the S0.3 chain's runtime reach is recorded as far as it goes and where it stops, the configured baseline passes, and no claim is made beyond what was observed. Make no gameplay claim.
+Close when NVN device property `0x60` is answered from a sourced value or its query is classified with evidence (what the game does with the answer), the device init chain is traced past it to the next stop point, the S2.1 findings (516 resolved names, both blockers resolved, stop at `0x60`) are incorporated, the configured baseline passes, and no claim extends past what was observed. Make no gameplay claim.
 
 ## What is settled — do not re-derive
 
 - `games/nfs/` exists and is wired through `build_app.py` as the third title (`VERSIONS['nfs100']`, `TITLES`, `APPS`, `step_code_nfs`/`step_data_nfs`); the build rebuilds NFS from `game.nsp` with every `expected-v1.0.0.json` check passing (~5 min). Full record: `docs/nfs-port-feasibility.md` "S1.3 — The games/nfs tree and the boot through nnMain".
 - The load set is the whole ExeFS: five digest-bound rewrite images (`rtld`, `main`, `sdk`, `subsdk0`, `subsdk1`) plus `main.npdm` as process metadata. 141,377 relocations; zero unresolved strong imports. rtld's text is never executed (W^X shared host page) and its DT_INIT is skipped — by policy, see `.operator/specs/nfs-port.md`.
 - The boot reaches `nnMain` at `main+0x2d2fd0` (S0.3's static address) and runs SDK startup, all runnable DT_INITs, guest threads, and `nv::InitializeGraphics` served by the HLE (Metal device observed).
-- The two window-path blockers and their evidence: headless `FAIL: VI requires native macOS window`; windowed `FAIL: native display link initialization` (standalone `CVDisplayLinkCreateWithActiveCGDisplays` probe returns -6661 in this session).
+- Both window-path blockers resolved (S2.1): headless offscreen `CAMetalLayer` in `vi_initialize()`; windowed vsync source tries `CVDisplayLinkCreateWithActiveCGDisplays` → `CVDisplayLinkCreateWithCGDisplays(displayID)` → host timer, every CVReturn logged. `dlprobe.out` (macOS 27.0.0, two active displays) shows every create variant returning 0 in this session, so S1.3's -6661 was environmental (consistent with the 03:40 unattended run's displays being asleep), not API breakage; which of S1.3's three bundled calls failed stays unattributed (Do-Not #5). The timer fallback is unexercised.
+- NVN surface traced through 516 of 523 name resolutions (S2.1): the endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` is reached and the first-seen tracer logs each name once. The 7 never requested are debug-checkpoint entries only; zero unknown names queried. After resolution the game calls `nvnDeviceInitialize`, `nvnQueueInitialize`, `nvnDeviceSetDepthMode`, `nvnDeviceSetWindowOriginMode`. Full map (chain entry → how reached → runtime status → HLE status): `docs/nfs-port-feasibility.md` S2.1.
+- Both S2.1 boots stop at the same point: `nvnDeviceGetInteger` answers `0x00`–`0x5f` (96 properties, no gaps) then dies at `unsupported NVN device property 0x60` = `NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID` (`nvn.h:328`); the HLE constant table ends at `0x5F`. This is the next blocker. Keep logs: `.babysteps/scratch/S2.1-NFS-nvn-surface/`.
 - Providers are settled at symbol level: no `.nss` in ExeFS (six entries) or the decrypted RomFS (19,169 paths); `glslc_*`/`multimedia_*` → `sdk`, `movie::SetAllocator` → `subsdk1`; `nnosGetDefaultUserExceptionStackForApplication` is weak (binding 2), binds zero, not boot-blocking. The DT_NEEDED **filename** identity is not claimed and must not be asserted.
 - The five NSO build IDs match none of the registered D2R builds, so all rewrites are generic (`cuts 0`, `obs 0`); rewriter runs with `DM_RULESET=native DM_PRIVATE_GATES=0`.
 - Configured baseline last passed: 255 tests, 1 skipped, non-fatal subprocess `ResourceWarning`, exit 0.
@@ -37,9 +39,8 @@ Close when the required NVN surface is mapped with each mapping tied to evidence
 
 | Work | Touch |
 | --- | --- |
-| Window path | `games/nfs/runtime/frontend.m` (display-link init), the VI window requirement (`runtime/services.c` / applet host) — resolve each with evidence or split it |
-| NVN surface | `games/nfs/third_party/d2r_gfx/` (`nvn_*`), driven by the S0.3 chain and the device inventory (523 names / 424 implemented / 99 red stubs, logged at boot) |
-| Chain observation | `hle_nvn.c` `HLE_FORCE("nvnBootstrapLoader")` already logs its argument; the S0.3 chain endpoint is what to catch |
+| Device property 0x60+ | `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c` — the `nvnDeviceGetInteger` property table (measured values end at `0x5F`); answer `0x60` (`NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID`) and `0x61` from a sourced value or classify them with evidence |
+| Chain continuation | `hle_nvn.c` — the same first-seen tracer from S2.1; continue logging as the device init chain proceeds past `0x60` |
 
 ## Read these first, and only these
 
@@ -50,20 +51,22 @@ Close when the required NVN surface is mapped with each mapping tied to evidence
 
 ## Carried evidence splits — owners
 
-- S0.3 `nvnBootstrapLoader` chain endpoint, runtime trace, indirect first-present target → S2.1 (this slice).
+- S0.3 `nvnBootstrapLoader` chain endpoint and the runtime trace → resolved in S2.1 (endpoint reached, 516 resolutions, stop at `0x60`). The **indirect first-present target and the runtime first-present trace** carry into S2.2.
 - `sub_63fea0` indirect/thread entry → S3.2.
 
 ## Do-Not entries that apply here
 
-- #2 — size every long evidence run explicitly (the S1.3 display-link probe pattern).
+- #2 — size every long evidence run explicitly (the S2.1 display-link probe pattern).
 - #3 — do not conclude absence from bytes that are not the decoded layer.
 - #4 — do not blanket-rename a forked tree's comments; keep the predecessor as attribution until re-observed.
+- #5 — one `runtime_fail` must not cover several calls: log each call's code at the site so a failure is attributable.
+- Do not invent a device-property value: `0x60`/`0x61` must be answered from a sourced measurement or classified with evidence, never from what a number "should" be.
 
 ## The gate
 
 - `python -m unittest discover -s tests` (configured baseline).
-- Every NVN surface mapping tied to a recorded observation; none extends past it.
+- Every device init claim tied to a recorded observation; none extends past it.
 
 ## When this slice closes
 
-Close when the required NVN surface is mapped with each mapping tied to evidence, the two window-path blockers are resolved or split with evidence, the S0.3 chain's runtime reach is recorded as far as it goes and where it stops, the configured baseline passes, and no claim is made beyond what was observed. Make no gameplay claim.
+Close when NVN device property `0x60` is answered from a sourced value or its query is classified with evidence, the device init chain is traced past it to the next stop point, the S2.1 findings (516 resolved names, both blockers resolved, stop at `0x60`) are incorporated, the configured baseline passes, and no claim extends past what was observed. Make no gameplay claim.
