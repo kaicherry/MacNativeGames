@@ -61,10 +61,18 @@ BOTW = REPO / 'games/botw'
 BOTW160 = json.loads((BOTW / 'assets/expected-v1.6.0.json').read_text())
 BOTW_LIST = BOTW / 'assets/shader_list.tsv'   # the game's shared shader list (docs/shader-list.md)
 VERSIONS['botw160'] = BOTW160
-TITLES = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw'}
+TITLES = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw', '010029B0118E8000': 'nfs'}
 # Per game: app name, bundle identifier, executable name (= the player's data folder under
 # ~/Library/Application Support/MacNativeGames, games/totk/runtime/game_version.h GAME_FOLDER)
-APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'botw': ('Breath of the Wild', 'org.macnativegames.botw', 'BotW')}
+APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'botw': ('Breath of the Wild', 'org.macnativegames.botw', 'BotW'),
+        'nfs': ('Need for Speed Hot Pursuit', 'org.macnativegames.nfs', 'NFS')}
+# Need for Speed Hot Pursuit Remastered (games/nfs): one base NSP, whole game in its Program NCA. The game is chosen
+# by the title IDs of the NCAs in the game file, never by its name. Every input is checked against
+# games/nfs/assets/expected-v1.0.0.json: the six ExeFS files, the five rewritten images, the RomFS image and the
+# shared-font reference pins.
+NFS = REPO / 'games/nfs'
+NFS100 = json.loads((NFS / 'assets/expected-v1.0.0.json').read_text())
+VERSIONS['nfs100'] = NFS100
 HACTOOL = ('https://github.com/SciresM/hactool.git', '1d64a83450e025622f3468c28fc4164dad2c5ef6')
 APP_NAME = 'Tears of the Kingdom'
 BUNDLE_ID = 'org.macnativegames.totk'
@@ -315,6 +323,8 @@ def prepare_work(work, py, logs):
     run(['rsync', '-a', *excludes, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
     # games/botw: its scripts find the shared ones at ../totk/scripts (work/botw next to work/totk)
     run(['rsync', '-a', *excludes, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
+    # games/nfs: self-contained; its scripts and rewriter are its own copies and read nothing outside work/nfs
+    run(['rsync', '-a', *excludes, f'{NFS}/', f'{work / "nfs"}/'], logs / 'sources-nfs.log')
     tooling = tree / 'tooling'
     # Migrate a work folder made by the old copier before writing child links:
     # link(tooling/spirv-cross, ...) must not traverse into a shared checkout.
@@ -411,17 +421,17 @@ def identify_update(tree, game, keys, logs):
     return version, source
 
 
-def font_report(folder):
+def font_report(folder, expected=None):
     """The fonts bound into the runtime: the pinned hashes identify the reference dump, and a valid font from
     another firmware version is bound by the SHA-256 of its actual bytes (the manifest keeps that value, so
     scripts/prepare_shared_fonts.py writes the real bytes into the runtime)."""
     rows = []
-    for kind, (name, expected) in enumerate(EXPECTED['shared_fonts_sha256'].items()):
+    for kind, (name, pin) in enumerate((expected or EXPECTED)['shared_fonts_sha256'].items()):
         path = folder / f'{kind}-{name}.bfttf'
         if not path.is_file():
             raise BuildError(f'missing shared font: {path}')
         digest = sha256(path)
-        if digest != expected:
+        if digest != pin:
             if not _bfttf_valid(path):
                 raise BuildError(f'shared font {name}: not the expected bytes and not a valid BFTTF font '
                                  f'(SHA-256 {digest[:16]}...)')
@@ -432,8 +442,8 @@ def font_report(folder):
                 fonts=rows)
 
 
-def validate_fonts(folder):
-    report = font_report(folder)
+def validate_fonts(folder, expected=None):
+    report = font_report(folder, expected)
     try:
         manifest = json.loads((folder / 'manifest.json').read_text())
         rows = manifest['fonts']
@@ -445,9 +455,9 @@ def validate_fonts(folder):
         raise BuildError(f'invalid shared-font manifest in {folder}: {e}') from None
 
 
-def fonts_valid(folder):
+def fonts_valid(folder, expected=None):
     try:
-        validate_fonts(folder)
+        validate_fonts(folder, expected)
         return True
     except (BuildError, OSError):
         return False
@@ -1383,8 +1393,8 @@ def identify_game(tree, game, keys, logs):
         raise BuildError(f'could not read the game file (see {log})')
     found = sorted({TITLES[t] for t in report['titles'] if t in TITLES})
     if len(found) != 1:
-        raise BuildError(f'the game file holds {report["titles"]}: expected Tears of the Kingdom (0100F2C0115B6000) or '
-                         f'Breath of the Wild (01007EF00011E000)')
+        raise BuildError(f'the game file holds {report["titles"]}: expected Tears of the Kingdom (0100F2C0115B6000), '
+                         f'Breath of the Wild (01007EF00011E000) or Need for Speed Hot Pursuit Remastered (010029B0118E8000)')
     return found[0]
 
 
@@ -1523,6 +1533,114 @@ def step_shaders_botw(tree, botw, logs):
         logs / 'prepare-shader-seed-botw.log', cwd=tree)
 
 
+# ---- Need for Speed Hot Pursuit Remastered (games/nfs) ----
+def step_code_nfs(tree, nfs, game, keys, env, logs):
+    """The ExeFS out of the base NSP (games/nfs/scripts/extract_code.py, title-parameterized), the five code modules
+    rewritten with this tree's rewriter (third_party/d2r), every file checked against expected-v1.0.0.json: the six
+    ExeFS files and the five rewritten images. main.npdm is accepted from another dump only the way a Tears of the
+    Kingdom build accepts it (Nintendo's ACID signature, or signed again once every code module matches)."""
+    version, expected = 'nfs100', NFS100
+    py = tree / '.venv/bin/python'
+    exefs = nfs / f'extracted/{version}/exefs'
+    want = expected['exefs_sha256']
+    manifest = exefs.parent / 'extraction-manifest.json'
+    if not source_matches(manifest, game) or not all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items()):
+        say('1/4 code: extracting the ExeFS from the game file')
+        if exefs.exists():
+            shutil.rmtree(exefs)
+        run([py, nfs / 'scripts/extract_code.py', game, '--keys', keys, '--title', expected['title_id'], '--output', exefs],
+            logs / f'extract_exefs-{version}.log', cwd=tree)
+    for n, h in want.items():
+        if not (exefs / n).is_file():
+            raise BuildError(f'ExeFS {n} is missing; not Need for Speed Hot Pursuit Remastered {expected["display_version"]}')
+        got = sha256(exefs / n)
+        if got == h:
+            continue
+        kind = npdm_kind(exefs / n, expected['title_id']) if n == 'main.npdm' else None
+        if kind == 'signed':
+            say(f'1/4 code: main.npdm is a Nintendo-signed {expected["display_version"]} file from another dump; using it')
+            continue
+        if kind == 'resigned':
+            say(f'1/4 code: main.npdm of this dump was signed again by a dump tool; the game does not use it and the '
+                f'code must match {expected["display_version"]}; using it')
+            continue
+        check(f'ExeFS {n}', got, h)
+    if not (nfs / f'extracted/{version}/elf/main-inventory.json').exists():
+        run([py, nfs / 'scripts/prepare_modules.py', exefs, '--output', nfs / f'extracted/{version}/elf'],
+            logs / f'prepare_modules-{version}.log', cwd=tree)
+    out = nfs / f'rewritten/{version}'
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ('rtld', 'sdk', 'subsdk0', 'subsdk1', 'main'):
+        image, h = out / f'{name}.patched.bin', expected['rewritten_sha256'][f'{name}.patched.bin']
+        if image.exists() and sha256(image) == h:
+            continue
+        say(f'1/4 code: rewriting {name} for Apple silicon' + (' (the big one: about a minute)' if name == 'main' else ''))
+        run([py, nfs / 'third_party/d2r/patch_nso.py', exefs / name, out, name], logs / f'rewrite_{version}_{name}.log', cwd=tree,
+            env=dict(env, DM_RULESET='native', DM_PRIVATE_GATES='0'))
+        check(f'rewritten {name}', sha256(image), h)
+    # scripts/prepare_runtime.py binds the loader to these images and to main.npdm: they are the same bytes as the
+    # rewrite that was verified site by site (games/nfs/README.md records the tool versions).
+    report = dict(format=1, status='pass', rom_version=version,
+                  scope=f'hash match with verified {expected["display_version"]} rewrite',
+                  module_file_sha256={**{f'extracted/{version}/exefs/{n}': want[n] for n in want},
+                                      **{f'rewritten/{version}/{n}.patched.bin': expected['rewritten_sha256'][f'{n}.patched.bin']
+                                         for n in ('rtld', 'main', 'sdk', 'subsdk0', 'subsdk1')}})
+    report_path = nfs / f'analysis/{version}-port/phase12-validation.json'
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + '\n')
+
+
+def step_data_nfs(tree, nfs, game, keys, logs, *, firmware=None, shared_fonts=None):
+    """The RomFS streamed from the Program NCA's own section (games/nfs/scripts/extract_romfs.py, all six IVFC
+    levels verified), and the shared fonts: this package has no system update partition and no font files among the
+    RomFS paths, so they come from --shared-fonts, from an unpacked firmware (--firmware) or from a previous build."""
+    version, expected = 'nfs100', NFS100
+    py = tree / '.venv/bin/python'
+    folder = nfs / f'extracted/{version}/romfs'
+    index = folder / 'index.json'
+    valid = False
+    if index.is_file() and (folder / 'romfs.bin').is_file():
+        try:
+            report = json.loads(index.read_text())
+            valid = (report.get('status') == 'pass' and report['romfs_sha256'] == expected['romfs']['sha256']
+                     and (folder / 'romfs.bin').stat().st_size == expected['romfs']['size'])
+        except (ValueError, KeyError):
+            pass
+    if not valid:
+        if folder.exists():
+            shutil.rmtree(folder)
+        say('2/4 data: extracting and verifying the RomFS (7 GB, about 6 minutes)')
+        run([py, nfs / 'scripts/extract_romfs.py', '--keys', keys, '--title', expected['title_id'],
+             '--manifest', nfs / f'extracted/{version}/extraction-manifest.json', '--output', folder],
+            logs / f'extract_romfs-{version}.log', cwd=tree)
+        report = json.loads(index.read_text())
+        check('RomFS', report['romfs_sha256'], expected['romfs']['sha256'])
+        check('RomFS size', report['romfs_size'], expected['romfs']['size'])
+    fonts = nfs / 'extracted/firmware/shared-fonts'
+    if not fonts_valid(fonts, expected):
+        if shared_fonts:
+            report = font_report(shared_fonts, expected)
+            if shared_fonts.resolve() != fonts.resolve():
+                if fonts.exists():
+                    shutil.rmtree(fonts)
+                fonts.mkdir(parents=True)
+                for f in report['fonts']:
+                    name = f"{f['type']}-{f['name']}.bfttf"
+                    shutil.copy2(shared_fonts / name, fonts / name)
+            (fonts / 'manifest.json').write_text(json.dumps(report, indent=2) + '\n')
+        elif firmware:
+            say('2/4 data: extracting the system shared fonts from the firmware')
+            if fonts.exists():
+                shutil.rmtree(fonts)
+            run([py, nfs / 'scripts/extract_shared_fonts.py', '--keys', keys, '--firmware', firmware, '--output', fonts],
+                logs / 'shared_fonts.log', cwd=tree)
+        else:
+            raise BuildError('Need for Speed needs --firmware <unpacked firmware NCA directory> or --shared-fonts <folder with '
+                             'the six verified .bfttf files>; its package holds no fonts (zero font files among the RomFS paths '
+                             'and no system update partition)')
+        validate_fonts(fonts, expected)
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild base + separate 1.6.0 update, or a combined card image.',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
@@ -1587,7 +1705,8 @@ def main(argv):
         raise BuildError(f'no firmware directory: {firmware}')
     if shared_fonts:
         font_report(shared_fonts)
-    if kind == 'nsp' and not (firmware or shared_fonts or fonts_valid(work / 'totk/extracted/firmware/shared-fonts')):
+    if kind == 'nsp' and not (firmware or shared_fonts or fonts_valid(work / 'totk/extracted/firmware/shared-fonts')
+                              or fonts_valid(work / 'nfs/extracted/firmware/shared-fonts')):
         raise BuildError('NSP files do not include system shared fonts. Supply --firmware <unpacked firmware NCA directory> '
                          'or --shared-fonts <previously extracted font directory>; valid fonts in --work are also reused.')
     py = prerequisites(args)
@@ -1602,6 +1721,31 @@ def main(argv):
     # The game decides the platforms, the work folder and the disk space needed, so it is identified before those checks.
     tree = prepare_work(work, py, logs)
     which = identify_game(tree, game, keys, logs)
+    if which == 'nfs':
+        if fresh_work and not args.work:   # NFS_build next to the game file, not TOTK_build
+            shutil.rmtree(work)
+        if args.platform == 'ios':
+            raise BuildError('Need for Speed has no iPhone / iPad build yet: build the Mac app (leave out --platform ios)')
+        if mod:
+            raise BuildError('--mod: merging a mod\'s main-module patches is not wired for Need for Speed')
+        if not args.work:
+            work = game.parent / 'NFS_build'
+            logs = work / 'logs'
+            tree = prepare_work(work, py, logs)
+        if not args.out:
+            out = game.parent / f'{APPS["nfs"][0]}.app'
+        if shutil.disk_usage(existing_volume_path(work.parent if work.parent.exists() else game.parent)).free / 2**30 < 16 and \
+                not (work / 'nfs/extracted/nfs100/romfs/romfs.bin').exists():
+            raise BuildError('needs about 16 GB free for the work folder (the RomFS image alone is 7 GB)')
+        nfs = work / 'nfs'
+        say(f'Need for Speed Hot Pursuit Remastered {NFS100["display_version"]} (by the title IDs in the game file); work folder {work}')
+        step_code_nfs(tree, nfs, game, keys, env, logs)
+        step_data_nfs(tree, nfs, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts)
+        say(f'done in {(time.time() - t0) / 60:.0f} min: the code and data are rebuilt from the game file and every file '
+            f'is checked against games/nfs/assets/expected-v1.0.0.json (work folder {work})')
+        say('App assembly is not wired for this title yet; the runtime is prepared, built and run from the work folder '
+            '(games/nfs/README.md: make prepare / runtime / boot).')
+        return
     if which == 'botw':
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build
             shutil.rmtree(work)

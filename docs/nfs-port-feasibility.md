@@ -347,3 +347,84 @@ Closes-when met: both manifest inputs are measured with recorded bytes and offse
 - `.babysteps/scratch/S1.3b-NFS-romfs/{extract_romfs_nfs.py,font_offsets.py}` — the title-parameterised extractor (reusing `games/by3/scripts/{extract_exefs,extract_romfs,merge_romfs}.py`) and the font offset probe.
 - `.babysteps/scratch/S1.3b-NFS-romfs/romfs/{romfs.bin,index.json}` — the extracted image and its index; `{digest-recheck.out,digest-recheck.time}` — the standalone digest re-run and its wall time.
 - `.babysteps/scratch/S1.3b-NFS-romfs/{shared-fonts/manifest.json,font-index.json}` — the six font hashes and their recorded offsets.
+
+## S1.3 — The games/nfs tree and the boot through nnMain
+
+Implementation slice (2026-10-22), not read-only: the `games/nfs/` tree and the third-title build wiring were built, and the loader booted through `nnMain`. No bootability or gameplay claim is made beyond the recorded observation.
+
+### The `games/nfs/` tree
+
+- Forked from `games/by3/` (that tree was itself forked from `games/totk/`): `runtime/`, `third_party/d2r/`, `third_party/d2r_gfx/`, `scripts/`, `Makefile`, `requirements.txt`, `README.md`. The launcher bundle and the prebuilt shader translator are NOT carried — they arrive with the app-assembly slice.
+- Boundary check clean: no runtime or build-time reach into `games/totk/` or `games/by3/`; the `totk_*.h` include names inside the tree resolve to the fork's own copies (12/12 verified); predecessor names appear only in provenance comments.
+
+### Registration
+
+The seed's `newFileRegistration`:
+
+- `build_app.py` module scope loads `games/nfs/assets/expected-v1.0.0.json` as `VERSIONS['nfs100']`, `TITLES['010029B0118E8000']='nfs'`, `APPS` entry `('Need for Speed Hot Pursuit','org.macnativegames.nfs','NFS')`.
+- `prepare_work` rsyncs `games/nfs` to `work/nfs`; `step_code_nfs`/`step_data_nfs` check every manifest key — six `exefs_sha256` files, five `rewritten_sha256` images, `romfs` size+sha256, `shared_fonts_sha256` pins via `font_report`'s reference-pin/actual-bytes fallback.
+
+### The build run
+
+2026-10-22, work folder `target-port/need-for-speed-hot-pursuit-remastered/NFS_build`, ~5 min:
+
+- ExeFS extracted by `games/nfs/scripts/extract_code.py --title 010029B0118E8000`; all six files matched `exefs_sha256`.
+- Five rewrites produced with `DM_RULESET=native DM_PRIVATE_GATES=0` by `games/nfs/third_party/d2r/patch_nso.py` and matched `rewritten_sha256` exactly: rtld, sdk, subsdk0, subsdk1, main.
+- RomFS extracted title-parameterised (`games/nfs/scripts/extract_romfs.py`, resolving the Program NCA through `open_program`/`program_header`), all six IVFC levels verified, `romfs.sha256` `2bc692dec1bd6df0b13050474c8d7aa84450d34e2a7b4e3f52ad9f4fe827a788` and size 7,352,922,956 matched.
+- Shared fonts from the firmware dump (`Ryujinx bis/system/Contents/registered`); `chinese-simplified` `a04eb490283d8393b2c49c52e315132461d790ac73996cb43ac869ce72003938` and `chinese-simplified-extension` `f5784e7a553fef9a05b3b7dba94e77e79162ace9db8dafc715ace0be1fd9b9ff` bound by actual bytes (the manifest pins the reference dump; the valid-BFTTF fallback bound them).
+- All the build's own manifest checks passed.
+
+### The load set
+
+Six ExeFS entries: five mapped rewrite images — rtld 81,920 bytes/20 symbols; main 34,471,936/485; sdk 14,270,464/26,235; subsdk0 10,420,224/107; subsdk1 8,290,304/11,535 — plus `main.npdm` loaded as process metadata (1,540 bytes, SHA-256 `c0b0163c578584ea4beb1165705b91bd55de21ae3f648763387797e84f7a48a3` bound, `META` header).
+
+Relocations: 141,377 total. Per module (relative/symbolic/cross/weak-zero): rtld 18/19/3/16; main 46,256/590/586/4; sdk 9,603/22,653/10/6; subsdk0 42,966/88/83/4; subsdk1 1,676/17,508/6,547/4. No strong import failed to resolve (the loader fails the boot on any unprovided strong import; it did not).
+
+### The rtld W^X finding
+
+- rtld's rewritten layout packs text (TEXT_END `0x18a0`), rodata (`0x2000`) and writable data (`0x3000`–`0x4000`) into one 16 KiB host page. A host page cannot be executable and writable at once, so `seal()` keeps the page writable, rtld's text is never executed, and its DT_INIT is skipped (logged at boot).
+- rtld exports no symbols, so nothing calls into it. The predecessor loaders never mapped rtld at all (TOTK and BY3 map three modules each), so this was unexercised before.
+
+### Boot observation
+
+Headless `make boot` (log kept): `nn::init::Start` entered; the observer logged `ENTER nnMain` with `nnMain at main+0x2d2fd0` (the S0.3 static entry address). Observed in order:
+
+- `nnosInitialize` (guest layout alias/stack/heap), rtld callback "modules linked", `nninitInitializeSdkModule` (runtime RomFS full SHA-256 verified over 7,352,922,956 bytes; 19,169 files; no overlays), `nninitStartup`;
+- DT_INITs: main state=2 init_array_count=207, sdk 2/110, subsdk0 2/4, subsdk1 2/45 (rtld skipped, W^X);
+- then inside nnMain: operation mode docked, two performance requests served, four guest threads created (entry `0x10…f20`), `nv::InitializeGraphics` served by the HLE ("native Metal graphics context initialized", Metal device "Apple M4 Pro").
+- Stopped at `FAIL: VI requires native macOS window`.
+
+Windowed run (log kept): the frontend created a window drawable 2628x1478 (scale 2), then stopped at `FAIL: native display link initialization` before the guest started. A standalone probe in the same session: `CVDisplayLinkCreateWithActiveCGDisplays` returns -6661 (deprecated since macOS 15.0). Environmental vs API breakage is not established.
+
+### Not observed
+
+- The S0.3 chain endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` — both runs stopped before it. The HLE takeover exists (`hle_nvn.c` `HLE_FORCE("nvnBootstrapLoader", …)`) and is instrumented to log its argument when called.
+- rtld's DT_INIT not run (W^X above). No present, no frame, no audio, no gameplay.
+
+### Provider evidence
+
+Measured on the S1.2 scratch inventories and the S1.3b RomFS index; recorded in `.babysteps/scratch/S1.3-NFS-boot/provider-evidence.json`:
+
+- (a) `DT_NEEDED` appears only in `main`: `glslc.nss`, `multimedia.nss`, `nnSdk.nss` (the `NFS_10_4_1` path strings); rtld/sdk/subsdk0/subsdk1 carry none.
+- (b) No `.nss` file exists in the ExeFS file set (six entries) or in the decrypted RomFS (19,169 indexed paths).
+- (c) main's 461 imports: 456 provided by `sdk`, 1 by `subsdk1` (`movie::SetAllocator`); the 4 unresolved are weak linker symbols (`__rel_dyn_start/end`, `__rel_plt_start/end`).
+- (d) `glslc_Alloc/Free/Realloc/GetAllocator` (imported by subsdk0, binding 1) and `multimedia_Alloc/Free/Realloc/GetAllocator/AllocAlign` (imported by subsdk1, binding 1) all bind to `sdk`'s exports.
+- (e) `nnosGetDefaultUserExceptionStackForApplication`: imported by `sdk` (dynsym index 11, binding 2 = weak), exported by no module; the loader binds unprovided weak imports to zero (only strong unprovided imports fail), so it is not boot-blocking — confirmed by the boot.
+
+Claim boundary: the DT_NEEDED filename strings are NOT proven to identify particular NSOs; what is established is that every strong import of every module is satisfied inside the mapped load set and no `.nss` file exists in the package's decrypted layers.
+
+### Gate
+
+`python3 -m unittest discover -s tests` — 255 tests, 1 skipped, exit 0 (the configured baseline).
+
+### Closeout
+
+Closes-when met: the `games/nfs/` tree wired through `build_app.py` rebuilds NFS from its original files with every manifest check passing, the loader maps/loads all six ExeFS entries (five rewrite images plus `main.npdm`) and boots through `nnMain` with the observation recorded, the provider questions are resolved at symbol level (the filename-identity question explicitly not claimed), the configured baseline passes, and no gameplay claim is made. Splits carried: (a) the S0.3 `nvnBootstrapLoader` chain endpoint and the runtime trace → S2.1; (b) the two window-path blockers (`FAIL: VI requires native macOS window` headless; `FAIL: native display link initialization` windowed) → S2.1 first business; (c) the `sub_63fea0` indirect/thread entry path → S3.2.
+
+## S1.3 source references
+
+- `.babysteps/scratch/S1.3-NFS-boot/{provider-evidence.json,boot-headless.log,boot-windowed.log,build.log}` — the provider record and the kept run logs.
+- `games/nfs/{README.md,Makefile}`
+- `games/nfs/scripts/{extract_code.py,extract_romfs.py,prepare_modules.py,prepare_runtime.py}`
+- `games/nfs/runtime/loader.c` (load-set, seal, boot logging)
+- `build_app.py` (NFS registration and `step_code_nfs`/`step_data_nfs`)
