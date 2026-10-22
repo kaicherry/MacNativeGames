@@ -298,3 +298,52 @@ Closes-when met: both values are read from container bytes with recorded offsets
 - `.babysteps/scratch/S1.3a-NFS-cnmt/{decode_cnmt.py,decode_nacp.py}` — the two decoders, reusing `games/by3/scripts/extract_exefs.py` (`container_entries`, `read_at`, `decrypt`, `nca_ctr_key`, `common_tickets`) and `games/by3/scripts/merge_romfs.py` (`Ctr`).
 - `.babysteps/scratch/S1.3a-NFS-cnmt/{cnmt-report.json,nacp-report.json,content-hash-check.json}` — decoded fields, offsets, and the three re-derived content hashes.
 - `.babysteps/scratch/S1.3a-NFS-cnmt/{meta.cnmt.nca,section0.bin,Application_010029b0118e8000.cnmt,control-section0.bin,control.nacp,cnmt.xml,section0-hactool.bin}` — the bytes each claim above was measured on.
+
+## S1.3b — The RomFS digest and the six shared-font inputs
+
+Read-only measurement. No port code, loader, `expected-*.json` or game data was added, and nothing was executed beyond the extractors. Scratch: `.babysteps/scratch/S1.3b-NFS-romfs/` (`EVIDENCE.md` carries the full record).
+
+### The RomFS input, and the exact image it covers
+
+`build_app.py:step_data` checks `index.json['romfs_sha256']` against `EXPECTED['romfs']['sha256']` and `romfs.bin` st_size against `EXPECTED['romfs']['size']`, so the digest must cover exactly the extracted image bytes — `games/by3/scripts/extract_romfs.py` writes `romfs.bin` as the last IVFC level and digests those bytes as they stream. The extraction was driven title-parameterised: a scratch copy of that flow resolving the Program NCA through `open_program(path, keys, title)` / `program_header` with `--title 010029B0118E8000`, replacing the TOTK-hardcoded `program_nca(nca_inventory(...))`. The source and Program NCA record were cross-checked against the S1.1 extraction manifest.
+
+| Field | Value |
+| --- | --- |
+| Container entry | `a040a32c4a4389eb6ad4baeecb97740c.nca` (Program, title `010029B0118E8000`), NCA offset 736, size 7,387,971,584 |
+| RomFS section | index 1, media 224..14,389,632 → NCA byte offset 114,688, container byte offset 115,424 |
+| `romfs.size` | **7,352,922,956** — equals level-5 length and `romfs.bin` st_size |
+| `romfs.sha256` | **`2bc692dec1bd6df0b13050474c8d7aa84450d34e2a7b4e3f52ad9f4fe827a788`** — over exactly those bytes |
+| IVFC blocks per level | 1 / 1 / 1 / 2 / 877 / 448,787 — all six levels block-verified |
+| Indexed files | 19,169 (`romfs/index.json`: path → image offset + size) |
+
+Wall times, both runs explicitly sized (Do-Not #2 is about the whole NSP, but the same 120 s window applies): extraction with streamed digest 357.96 s; a standalone `shasum -a 256 romfs.bin` re-run of the image file 14.14 s, returning the same digest.
+
+### The six shared-font inputs
+
+The NSP has no system update partition, so `--xci` does not apply and the fonts are firmware inputs: `games/by3/scripts/extract_shared_fonts.py --firmware <Ryujinx registered>` extracted them (NCA FS header + six IVFC levels verified per font NCA; BFTTF header decodes to an sfnt font). It needs **no game title parameter** — the six fonts are located by their own title IDs `0100000000000810`–`0100000000000814`, and meta NCAs are excluded by content type. Each font was re-read at its indexed offset and cross-checked against the script's own `manifest.json`.
+
+| # | name | title_id | image offset | bfttf bytes | font bytes | sha256 | vs reference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | standard | `0100000000000811` | 512 | 2,053,636 | 2,053,628 | `823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad` | match |
+| 1 | chinese-simplified | `0100000000000814` | 124,432 | 7,848,208 | 7,848,200 | `a04eb490283d8393b2c49c52e315132461d790ac73996cb43ac869ce72003938` | differs |
+| 2 | chinese-simplified-extension | `0100000000000814` | 512 | 123,920 | 123,912 | `f5784e7a553fef9a05b3b7dba94e77e79162ace9db8dafc715ace0be1fd9b9ff` | differs |
+| 3 | chinese-traditional | `0100000000000813` | 512 | 3,580,268 | 3,580,260 | `9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457` | match |
+| 4 | korean | `0100000000000812` | 512 | 3,672,876 | 3,672,868 | `5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8` | match |
+| 5 | nintendo-extension | `0100000000000810` | 237,264 | 180,244 | 180,236 | `f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68` | match |
+
+"vs reference" compares against `games/totk/assets/expected-v1.4.3.json` `shared_fonts_sha256` (identical in every TOTK/BOTW manifest — the reference dump). Four match. The two zh-cn fonts (both from title `0100000000000814`) differ: this machine's firmware dump is another version for that title, and both are structurally valid BFTTFs. `build_app.py:font_report` binds a valid font from another firmware version by the SHA-256 of its actual bytes, so either pin is workable; which value `expected-v1.0.0.json` pins is a manifest-slice decision. Font NCA provenance in this dump: `registered/{a05c2dba…,61562912…,3684576b…,f846a1c2…,8bb427d2…}.nca/00` for titles 0810–0814 respectively.
+
+### The package cannot supply the fonts
+
+The game RomFS holds zero font files (no `.bfttf`/`.ttf`/`.otf` among 19,169 paths) and the container's five NCAs are Program, Control, LegalInformation, HtmlDocument and Meta, so there is no font source inside the game package. `build_app.py:step_data` accordingly requires `--firmware` or `--shared-fonts` for NSP builds.
+
+### Closeout
+
+Closes-when met: both manifest inputs are measured with recorded bytes and offsets, the configured baseline passes, and no port runtime code changed. Splits carried: (a) the per-version manifest `games/nfs/assets/expected-v1.0.0.json` itself, including the font pin decision → S1.3c; (b) `subsdk1` in the runtime load set → S1.3; (c) `.nss` provider identity/absence and the `nnosGet…` provider → S1.3; (d) indirect first-present target and runtime trace → S2.1.
+
+## S1.3b source references
+
+- `.babysteps/scratch/S1.3b-NFS-romfs/EVIDENCE.md` — the full measured record, commands, and the checked-image argument.
+- `.babysteps/scratch/S1.3b-NFS-romfs/{extract_romfs_nfs.py,font_offsets.py}` — the title-parameterised extractor (reusing `games/by3/scripts/{extract_exefs,extract_romfs,merge_romfs}.py`) and the font offset probe.
+- `.babysteps/scratch/S1.3b-NFS-romfs/romfs/{romfs.bin,index.json}` — the extracted image and its index; `{digest-recheck.out,digest-recheck.time}` — the standalone digest re-run and its wall time.
+- `.babysteps/scratch/S1.3b-NFS-romfs/{shared-fonts/manifest.json,font-index.json}` — the six font hashes and their recorded offsets.
