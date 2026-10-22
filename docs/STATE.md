@@ -4,25 +4,25 @@
 
 On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
 
-**The next action** is S1.3a — Re-extract and decode the NFS CNMT. The S1.2 rewrite set is complete for all five modules, but the version integer is still unread, and the artifacts S1.1 kept cannot answer it: `meta/cnmt.nca` is 3,584 bytes with no `NCA0` at `0x200`, and the 304-byte payload in `meta/pfs0/` occurs nowhere inside those bytes. Locate the meta NCA in the package, re-extract its section 0 with the correct offset and size, decompress it if the NCA header flags compression, and read `version` and `display_version` from the CNMT header bytes. Record the container offset, section offset/size, and the bytes that carry each field. Evidence only: no `expected-*.json`, no RomFS extraction, no loader, no bootability claim. Carry the S1.2 splits: RomFS extraction, the six-font `shared_fonts_sha256` input, and the `subsdk1` runtime load set.
+**The next action** is S1.3b — Extract the NFS RomFS with the title-parameterised path and record `romfs{size,sha256}`. `build_app.py` compares `romfs_sha256` against the digest of `extracted/<version>/romfs/romfs.bin` and `romfs.size` against that file's size, and `games/by3/scripts/extract_romfs.py` writes `romfs.bin` as the last IVFC level with `romfs_size=levels[-1][1]`; that copy hardcodes the TOTK title, so drive the extraction with `--title 010029B0118E8000` through `program_header`/`open_program` and verify every IVFC level. The Program NCA's RomFS is nearly the whole 7.39 GB package, so the digest needs its own explicitly-sized run (Do-Not #2 is about the whole NSP, not this image, but the same 120 s window applies). Record the six `shared_fonts_sha256` inputs in the same pass — a package with no system-update partition has nowhere else to take them. Evidence only: no `expected-*.json`, no loader, no game code, no bootability claim. Carry the S1.2 and S1.3a splits: `subsdk1` in the runtime load set, the `.nss` and `nnosGet…` providers, and the indirect first-present targets.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
-The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified active model for S1.2 was `opencode-go/deepseek-v4.1-flash`, with 1,000,000 context and 384,000 output; re-verify the live session model and catalog for every slice. At slice start, capture the session ID/model and cumulative usage/cost; at closeout, report actual ledger usage and USD cost, with the slice delta separate from cumulative totals. Forecasts are informational, not the spend record.
+The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified active model for S1.3a was `opencode-go/deepseek-v4.1-flash#high`, with 1,000,000 context and 384,000 output; the configured `modelContextLimit` of 1,050,000 is above the host's 1,000,000, so the host limit is the real cap. Re-verify the live session model and catalog for every slice. At slice start, capture the session ID/model and cumulative usage/cost; at closeout, report actual ledger usage and USD cost, with the slice delta separate from cumulative totals. Forecasts are informational, not the spend record.
 
 ## Next action
 
-S1.3a — Re-extract and decode the NFS CNMT. Find the meta NCA in the package, re-extract its section 0 at the right offset and size (decompressing when the NCA header says the section is compressed), and read `version` (integer) and `display_version` from the CNMT header. Do not infer either value from SDK strings, title IDs, or the ExeFS. Record the container offset, the section offset/size, and the exact bytes carrying each field. Write nothing outside scratch: no `expected-*.json`, no RomFS extraction, no loader, no game code, no bootability claim.
+S1.3b — Extract the NFS RomFS with the title-parameterised path and record `romfs{size,sha256}`. Read what `build_app.py` hashes before extracting, then extract the Program NCA's RomFS with `--title 010029B0118E8000` through `program_header`/`open_program`, verify every IVFC level, and record the digest and byte count over exactly the image the check hashes. The image is nearly the whole 7.39 GB package: give the digest its own explicitly-sized run and record the wall time. Record the six `shared_fonts_sha256` inputs from the same package. Write nothing outside scratch and commit no game data: no `expected-*.json`, no loader, no game code, no bootability claim.
 
-Gate: `python -m unittest discover -s tests` passes; `version` and `display_version` are read from CNMT bytes, with offset and field evidence recorded; no port runtime code changes.
+Gate: `python -m unittest discover -s tests` passes; `romfs.size` and `romfs.sha256` are recorded from an extracted image with every IVFC level verified, and six font hashes are recorded; no port runtime code changes.
 
-Close when both values are read from the container with recorded bytes and offsets, or a precise blocker names the reason and a split; the configured baseline passes; and no port runtime code is changed. Make no bootability or gameplay claim.
+Close when both manifest inputs are measured with recorded bytes and offsets, or a precise blocker names the reason and a split; the configured baseline passes; and no port runtime code is changed. Make no bootability or gameplay claim.
 
-**The Do-Not list is `docs/donot.md`** — 2 entries, append-only. Never dropped, never trimmed.
+**The Do-Not list is `docs/donot.md`** — 3 entries, append-only. Never dropped, never trimmed.
 
 ## Completed
 
-S0.1, S0.2, S0.3, and S1.1 evidence tasks are complete; no NFS implementation is complete. The test fixture repair is complete, but it is not an NFS port task.
+S0.1, S0.2, S0.3, S1.1, S1.2 and S1.3a evidence tasks are complete; no NFS implementation is complete. The test fixture repair is complete, but it is not an NFS port task.
 
 ## In progress
 
@@ -30,7 +30,7 @@ No NFS port task is in progress.
 
 ## Queued
 
-The roadmap below contains approved candidate work units. S1.2 is promoted as the next task; the S0.3 and S1.1 evidence splits are carried into S1.2/S1.3/S2.1/S3.2 and the manifest work. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
+The roadmap below contains approved candidate work units. S1.3b is promoted as the next task; the remaining S1.1, S1.2 and S1.3a evidence splits are carried into S1.3b/S1.3/S2.1. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
 
 - S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code. **DONE**
 - S0.2 — Use existing package/module analysis tools to map loading, rewrite/SDK, NVN, and service requirements; decide go/no-go for defining S1 implementation work. **DONE**
@@ -40,7 +40,8 @@ The roadmap below contains approved candidate work units. S1.2 is promoted as th
 ### S1 — Game-specific build and runtime bootstrap (approved)
 
 - S1.2 — Produce a verified ARM64 rewrite. **DONE**
-- S1.3a — Re-extract and decode the CNMT version. **NEXT**
+- S1.3a — Re-extract and decode the CNMT version. **DONE**
+- S1.3b — Extract the RomFS and the six font hashes for the manifest. **NEXT**
 - S1.3 — Boot the loader through `nnMain`.
 
 ### S2 — Graphics and first frame (approved)
@@ -106,3 +107,12 @@ The roadmap below contains approved candidate work units. S1.2 is promoted as th
 - `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`. Log: `.babysteps/scratch/S1.2-NFS-rewrite/gate.log`.
 - Boundary: scope was the working-tree diff against HEAD (documentation-only). Linkage: no code, script, or build file changed, so no new runtime or build-time linkage into `games/totk` or `games/by3`; the report's predecessor references are citations. Paths: the report cites `games/by3/...` source paths as evidence and names the scratch copies, with no output written into either boundary tree.
 - No new paid-for fault; the Do-Not count remains 2. No bootability or gameplay claim; no port runtime code changed; no game code executed. S1.2 splits: the CNMT decode (promoted to S1.3a), title-parameterized RomFS extraction, the six-font `shared_fonts_sha256` input, the `subsdk1` runtime load set, and the fact that no D2R cut applies to these modules.
+
+### S1.3a — Re-extract and decode the NFS CNMT (2026-10-22)
+
+- Report: `docs/nfs-port-feasibility.md` S1.3a. `version` is `0`, read from the CNMT at container 7,388,514,656 (`+0x08`, bytes `00 00 00 00`); `display_version` is `1.0.0`, read from `control.nacp` at container 7,388,070,208 (`+0x3060`, bytes `31 2e 30 2e 30 00 …`). The CNMT carries no display string — a printable-run scan of all 304 bytes is empty — so the display version is an NACP field and was read from the control NCA.
+- Why S1.1/S1.2 could not answer it: the meta NCA header is AES-XTS(`header_key`) and its section body is AES-CTR, so raw container bytes contain neither `NCA0` nor `CNMT`. Decrypted, section 0 is a 512-byte CTR section whose first 32 bytes are the PFS0 hash table and whose 400-byte PFS0 starts at `+0x20`; the CNMT is byte-identical to the file S1.1 kept (`25cba08185cb6d1ea8a86b16f5b64f3a09aa6e14e86906678cb1c04280d1e1f4`).
+- Cross-checks, not just a decode: the header's recorded section hash equals the fs header's SHA-256; the PFS0 hash table's SHA-256 equals the superblock `master_hash`; three of the four CNMT content hashes (control, legal, html) were re-derived from the container and match. The Program NCA was not hashed (Do-Not #2). The package's own `.cnmt.xml`/`.nacp.xml` sidecars agree with both values but are not a hash source — their Meta `<Hash>` is not the meta NCA's SHA-256.
+- `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`. Log: `.babysteps/scratch/S1.3a-NFS-cnmt/gate.log`.
+- Boundary: documentation-only diff. Linkage: no code, script, or build file changed, and the scratch decoders import `games/by3/scripts` (inside the boundary) at run time without changing it; no reach into `games/totk`. Paths: no output written into `games/totk` or `games/by3`.
+- Do-Not #3 added (raw container bytes are not evidence of absence). No bootability or gameplay claim; no port runtime code changed; no game code executed. S1.3b is promoted: title-parameterized RomFS extraction for `romfs{size,sha256}` plus the six `shared_fonts_sha256` inputs.

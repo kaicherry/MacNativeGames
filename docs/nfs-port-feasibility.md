@@ -183,7 +183,7 @@ Read-only scoping. No port code, runtime code, or manifest file was added; no bo
 - Program NCA `a040a32c4a4389eb6ad4baeecb97740c.nca`, offset 736, size 7,387,971,584, `content_type` 0, title `010029B0118E8000`.
 - ExeFS, all hashes matched between the S0.1 extraction and the S1.1 re-extraction: `main` 6,906,316 / `721afa1df58eefe388b0630267f9f7ae09d29a95c54136ff770fd6981a76ae5e`; `main.npdm` 1,540 / `c0b0163c578584ea4beb1165705b91bd55de21ae3f648763387797e84f7a48a3`; `rtld` 7,223 / `e1b018d97186c07e69d1203326183dddcd575af8fe192433b848c30ca650eb82`; `sdk` 5,619,621 / `c54bf6080c82b1946574714e7bac2a1d2b15cc7e1198785bde0b95b393ead722`; `subsdk0` 4,501,008 / `6afb3c974222876eae903a645b1da2abcd896c4fd5ff77e26cb2d6f6e77eb185`; `subsdk1` 3,397,429 / `efc5c92a4b55ff050d040f1236f02663ccfdfab14a80e59f312c38e23449860f`.
 - Meta NCA `8938618b1d4bb12519520df058f8ab10.cnmt.nca`, offset 7,388,511,456, size 3,584, `content_type` 1; its NCA header reports SDK version **10.4.0.0**, which matches the `NFS_10_4_1` path embedded in `main`'s `DT_NEEDED` strings.
-- That meta NCA's section 0 is a 400-byte PFS0 holding one 304-byte `Application_010029b0118e8000.cnmt`, and the payload does **not** begin with `CNMT` (it begins `00 80 8e 11 b0 29 00 01`). So the version integer was not read, and the layout is not yet explained.
+- That meta NCA's section 0 is a 400-byte PFS0 holding one 304-byte `Application_010029b0118e8000.cnmt`. Its payload begins `00 80 8e 11 b0 29 00 01`, which is the CNMT's title-id field: the file carries no `CNMT` magic. The decode is S1.3a; the version reads `0`.
 
 ### Staged package contents
 
@@ -236,9 +236,9 @@ Command per module, with the same environment pair `step_code` uses (`build_app.
 - `STATIC` recounts with llvm-objdump report `violations=0` on all five, and changed text words equal the rewrite heads on all five.
 - sdk's gate and system-register counts here (94 gates; 60 `tpidrro`, 33 `cntpct`, 5 `tpidr`) match the S0.3 raw-scan counts, recounted independently of the rewriter's own capstone pass.
 
-### The S1.1 meta artifact holds no CNMT
+### What the S1.1 reading could not settle
 
-The version question is not answerable from what S1.1 kept: `meta/cnmt.nca` is 3,584 bytes with no `NCA0` at `0x200`, and the 304-byte payload in `meta/pfs0/Application_010029b0118e8000.cnmt` occurs nowhere inside those 3,584 bytes (`nca.find(payload) == -1`). Re-locating the meta NCA in the package and re-extracting section 0 comes before any CNMT field can be read.
+S1.1 read `meta/cnmt.nca` as raw container bytes: 3,584 bytes with no `NCA0` at `0x200`, and the 304-byte payload not found inside them. Neither observation was evidence: the NCA3 header is AES-XTS(`header_key`) and the section body is AES-CTR, so no structure appears before decryption. S1.3a decrypted both layers — the section holds exactly the 304-byte file S1.1 kept, and the version reads `0`.
 
 ### Closeout
 
@@ -251,3 +251,50 @@ Closes-when met: each module rewrote with a recorded source and output SHA-256, 
 - `.babysteps/scratch/S1.2-NFS-rewrite/prepare_modules_scratch.py` — the one-line-different copy; `diff` against `games/by3/scripts/prepare_modules.py` is `:222` only.
 - `.babysteps/scratch/S1.1-NFS-manifest/meta/` — the artifacts the CNMT note above measured.
 - `games/by3/third_party/d2r/patch_nso.py:30,171-183,1068-1119`; `games/by3/third_party/d2r/structck.py:1-60`; `games/by3/scripts/prepare_modules.py:25-212,215-230`; `build_app.py:540-541`.
+
+## S1.3a — The CNMT version and the NACP display version
+
+Read-only decode. No port code, loader, `expected-*.json`, RomFS extraction or game code was added, and nothing was executed. Scratch: `.babysteps/scratch/S1.3a-NFS-cnmt/` (`EVIDENCE.md` carries the whole chain).
+
+### Both values, and the bytes that carry them
+
+| Field | Value | Container byte offset | Plaintext position | Bytes |
+| --- | --- | --- | --- | --- |
+| `version` (integer) | `0` (`0x0`) | 7,388,514,656 | CNMT `+0x08` | `00 00 00 00` |
+| `display_version` | `1.0.0` | 7,388,070,208 | `control.nacp` `+0x3060` | `31 2e 30 2e 30 00 …` |
+
+- **`display_version` is not a CNMT field.** A printable-run scan of all 304 CNMT bytes is empty; the string lives in the control NCA's NACP. Read it there or not at all.
+- `version` `0` is a content version, not a display-derived number — the same reason TOTK 1.4.3 is `0xB0000` and BOTW 1.6.0 is `0xC0000` (S1.1). The manifest filename follows the display string: `expected-v1.0.0.json`.
+
+### The meta NCA, decoded
+
+- Container entry `8938618b1d4bb12519520df058f8ab10.cnmt.nca`: PFS0 entry at 7,388,510,720, first byte at 7,388,511,456 (data start 736), 3,584 bytes, SHA-256 `8938618b…1abf5f630`.
+- Its header is **AES-XTS(`header_key`)**, six 512-byte sectors tweaked by sector index; only then does `0x200` read `NCA3`. `content_type` 1 (meta), `title_id` `010029B0118E8000`, SDK 10.4.0.0, rights id zero.
+- Section 0: media blocks 6..7 = NCA `0xC00..0xE00`, `crypt_type` 3 (CTR). Body key = key area slot 2 of `key_area_key_application_0a` = `68a273da…019c3af0`, the value hactool prints as "Key 2 (Decrypted)"; the IV is the 8-byte section CTR at `fs_header+0x140` (zero here) as a big-endian high half, with the block's absolute NCA offset >> 4 as the low half.
+- The section does not begin with its partition. Its first 32 bytes are the hash table (`hash_table_offset` 0, size 32; SHA-256 of them equals the superblock `master_hash` `e22ad794…3e0990`), and the PFS0 starts at `pfs0_offset` 32 with `pfs0_size` 400. The header's own section hash at `0x280` is SHA-256 of the 0x200-byte fs header and matches (`42aefcf6…f54b99a`).
+
+### The CNMT, decoded from the bytes
+
+`Application_010029b0118e8000.cnmt`, 304 bytes, SHA-256 `25cba081…0d1e1f4` — byte-identical to the copy S1.1 kept, so S1.1 had the file and lacked only the decode.
+
+- `0x00` title id `010029B0118E8000`; `0x08` **version `0`**; `0x0C` type `0x80` (Application); `0x0E` extended-header size 16; `0x10` content count 4; `0x12` content-meta count 0; `0x20` extended header: original id `010029B0118E8800`, required system version `0x28200000` (673,185,792).
+- No `CNMT` magic precedes the title-id field in these bytes. What confirms the structure is the content table, not a magic: four records from `0x30`, `0x38` bytes each (`hash` 0x20, `id` 0x10, `size` 6 bytes LE, `type` 1, reserved 1), then the 0x20-byte digest at `0x110`. Each record's id is the first 16 bytes of its hash, and its size and type match the NCA in the container.
+  - Program `a040a32c…`, 7,387,971,584, type 1; Control `cf889dea…`, 287,744, type 3; LegalInformation `8a334a23…`, 136,704, type 5; HtmlDocument `e908c0d7…`, 114,688, type 4. Digest `83eb59b4…b8b96d46`, which is not SHA-256 of the preceding bytes.
+- Three of the four hashes were re-derived from the container by hashing the NCA entries (control, legal, html) and match; the Program NCA was not hashed (Do-Not #2).
+
+### The NACP, and what the package's sidecars are worth
+
+- Control NCA at 7,387,972,320 (287,744), `content_type` 2. Section 0: NCA `+0xC00`, 284,672 bytes, CTR as above, fs header an `IVFC` RomFS superblock whose last level starts at section `+0x14000`.
+- `control.nacp` is 16,384 bytes at section `+0x14200`; the 16 ASCII bytes at `+0x3060` read `1.0.0`. The file starts with the 16 language entries (0x3000: name 0x200 + publisher 0x100) and carries no `NACP` magic either.
+- The package also holds two sidecars inside its PFS0, `8938618b….cnmt.xml` and `cf889dea….nacp.xml`. Both agree with the decoded bytes (`<Version>0</Version>`, `<DisplayVersion>1.0.0</DisplayVersion>`) and neither is needed. Their Meta `<Hash>` `f7ca7ebb…` is not the meta NCA's SHA-256 `8938618b…f630`, so they are not a hash source.
+
+### Closeout
+
+Closes-when met: both values are read from container bytes with recorded offsets, the configured baseline passes, and no port runtime code changed. Splits carried: (a) title-parameterized RomFS extraction for `romfs{size,sha256}` → S1.3b; (b) the six `shared_fonts_sha256` inputs → S1.3b; (c) `subsdk1` in the runtime load set → S1.3; (d) `.nss` provider identity/absence and the `nnosGet…` provider → S1.3; (e) indirect first-present target and runtime trace → S2.1.
+
+## S1.3a source references
+
+- `.babysteps/scratch/S1.3a-NFS-cnmt/EVIDENCE.md` — the offset chain from PFS0 table to either field, plus the keys and IV rule.
+- `.babysteps/scratch/S1.3a-NFS-cnmt/{decode_cnmt.py,decode_nacp.py}` — the two decoders, reusing `games/by3/scripts/extract_exefs.py` (`container_entries`, `read_at`, `decrypt`, `nca_ctr_key`, `common_tickets`) and `games/by3/scripts/merge_romfs.py` (`Ctr`).
+- `.babysteps/scratch/S1.3a-NFS-cnmt/{cnmt-report.json,nacp-report.json,content-hash-check.json}` — decoded fields, offsets, and the three re-derived content hashes.
+- `.babysteps/scratch/S1.3a-NFS-cnmt/{meta.cnmt.nca,section0.bin,Application_010029b0118e8000.cnmt,control-section0.bin,control.nacp,cnmt.xml,section0-hactool.bin}` — the bytes each claim above was measured on.
