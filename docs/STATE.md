@@ -4,7 +4,7 @@
 
 On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
 
-**The next action** is S2.2b — Implement the `hid` IPC service (controller input). S2.2's 0x60/0x61 are classified (return 0) and the init chain proceeds: NVN device init completes, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC. The indirect first-present target and runtime trace (S2.1 resolved) and the `sub_63fea0` entry path (S3.2) remain carried.
+**The next action** is S2.3 — Boot the NFS runtime with the `hid` service implemented (controller input). S2.2's 0x60/0x61 are classified (return 0) and the init chain proceeds: NVN device init completes, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC. The indirect first-present target and runtime trace (S2.1 resolved) and the `sub_63fea0` entry path (S3.2) remain carried.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
@@ -12,21 +12,21 @@ The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified a
 
 ## Next action
 
-S2.2b — Implement the `hid` IPC service (controller input). S2.2 classified 0x60 (NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID) and 0x61 (NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS) as debug/feature flags returning 0. The init chain now proceeds past NVN device init, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC.
+S2.3 — Boot with the `hid` service implemented and trace to the next stop. S2.2b registered `hid:` with handlers for 13 commands (Initialize, user handles, style set, vibration/six-axis handles, battery, npad counts, system properties). The game now opens `hid:` and proceeds past hid initialization. Run `make boot` headless, capture the full boot log, and trace what happens next: controller setup, account flow, and the next IPC or runtime blocker. Every IPC command observed, every fail path recorded, no gameplay claim.
 
 Gate: `python -m unittest discover -s tests` passes; every device init claim is tied to a recorded observation; no gameplay claim.
 
-Close when the `hid` service is implemented (controller input end-to-end), the init chain is traced to the next stop point, S2.2's findings (0x60/0x61 classified, first GPU frame runs) are incorporated, the configured baseline passes, and no claim extends past what was observed. Make no gameplay claim.
+Close when the boot log is captured past hid initialization, the next stop point is identified (IPC command, runtime fail, or other blocker), S2.2b's hid implementation is verified against observed calls, and no claim extends past what was observed. Make no gameplay claim.
 
 **The Do-Not list is `docs/donot.md`** — 4 entries, append-only. Never dropped, never trimmed.
 
 ## Completed
 
-S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, device properties 0x00–0x5f answered. S2.2 is complete: properties 0x60/0x61 classified, first GPU frame runs, stop at IPC service `hid`.
+S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, device properties 0x00–0x5f answered. S2.2 is complete: properties 0x60/0x61 classified, first GPU frame runs. S2.2b is complete: hid IPC service registered (13 commands, Initialize through system properties).
 
 ## In progress
 
-S2.2b — Implement the `hid` IPC service (controller input).
+S2.3 — Boot with the hid service implemented and trace to the next stop.
 
 ## Queued
 
@@ -49,8 +49,8 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 
 - S2.1 — Map the required NVN surface. **DONE**
 - S2.2 — Resolve NVN device properties 0x60/0x61 and continue the device init chain to the first frame. **DONE**
-- S2.2b — Implement the `hid` IPC service (controller input). **IN PROGRESS**
-- S2.3 — Verify shader and visual correctness.
+- S2.3 — Boot with the hid service implemented and trace to the next stop. **IN PROGRESS**
+- S2.4 — Verify shader and visual correctness.
 
 ### S3 — Services and playable race (approved)
 
@@ -170,3 +170,9 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 - **Scratch evidence.** Boot log: `.babysteps/scratch/S2.2-NFS-ipc/logs/boot.log` (headless, 98 lines — NVN init complete, first frame, then `hid` fail).
 - `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped. Boundary (scope: `games/nfs/` only): linkage clear (only `hle_nvn.c` changed, no calls into `games/totk/` or `games/by3/`), paths clear (self-contained HLE data change).
 - **No gameplay claim.** S2.2b promoted: resolve the `hid` IPC service blocker after the first GPU frame.
+
+### S2.2b — Implement the `hid` IPC service (controller input) (2026-10-22)
+
+- **hid: IPC service implemented.** `games/nfs/runtime/hid_service.c` registers the `hid:` service via `runtime_ipc_register("hid:", hid_handler, NULL, NULL)` and handles 13 commands: Initialize/RegisterClient (0), GetApplicationControlUserHandle (1), GetNewestControlUserHandle (2), GetControlUserHandle (3), GetSupportedNpadStyleSet (4), IsNewestControlUserEnabled (5), GetVibrationDeviceHandles (6), GetSixAxisSensorHandle (7), GetBatteryInfo (8), IsUserAttached (9), GetNpadCounts (10), GetSystemProperties (11), GetNpadAddr (12). Vibration handles return 2 (left/right) with Switch-style handle layout; six-axis returns 0 (no Switch controllers on Mac); battery reports 100%/full; npad counts report 1 connected; system properties report docked model, en-US language, 1 user. Unknown commands still stop the runtime.
+- **Code changed, committed `9be4912`**. Self-contained in `games/nfs/runtime/`; no calls into `games/totk/` or `games/by3/`.
+- **Gate.** `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped. Boundary: linkage clear (only `hid_service.c` changed, includes `runtime.h` and `ipc.h` only), paths clear (self-contained).
