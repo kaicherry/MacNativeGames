@@ -1,0 +1,33 @@
+{
+  "_comment": "Verified 1.0.0 source/rewrite bytes, cumulative RomFS and shared-font reference pins (a valid BFTTF from another firmware version is bound by its actual bytes). Runtime validation is recorded separately.",
+  "title_id": "010029B0118E8000",
+  "version": 0,
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "721afa1df58eefe388b0630267f9f7ae09d29a95c54136ff770fd6981a76ae5e",
+    "main.npdm": "c0b0163c578584ea4beb1165705b91bd55de21ae3f648763387797e84f7a48a3",
+    "rtld": "e1b018d97186c07e69d1203326183dddcd575af8fe192433b848c30ca650eb82",
+    "sdk": "c54bf6080c82b1946574714e7bac2a1d2b15cc7e1198785bde0b95b393ead722",
+    "subsdk0": "6afb3c974222876eae903a645b1da2abcd896c4fd5ff77e26cb2d6f6e77eb185",
+    "subsdk1": "efc5c92a4b55ff050d040f1236f02663ccfdfab14a80e59f312c38e23449860f"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "02a24b38914bf6b9e0102b38a61b7f63a07d93bf1032c272d4e4f943aa5bf260",
+    "rtld.patched.bin": "1b269a41782151ab7d69703baa1f227b6018b126b63890d0b5103a6744a9354d",
+    "sdk.patched.bin": "a42b758bc5f2160aefd685339fe110660dd18acb3bbc9feae79162bcc00c27d5",
+    "subsdk0.patched.bin": "386e15370672cfe7b5b640250308ebad28f6218435fe5934e7cfca5ee5a3bf4c",
+    "subsdk1.patched.bin": "3dbc80c43067e693d1eac16ef7ae797d927d1d8dcf1d69a1a10d9ed40f7b4260"
+  },
+  "romfs": {
+    "size": 7352922956,
+    "sha256": "2bc692dec1bd6df0b13050474c8d7aa84450d34e2a7b4e3f52ad9f4fe827a788"
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
+    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}
