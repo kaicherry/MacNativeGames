@@ -49,6 +49,14 @@ class Updates(unittest.TestCase):
         self.update = self.root/'update.nsp'
         self.update.write_bytes(partition([('program.nca', update_nca()), ('common.tik', ticket())]))
 
+    def fixture_tree(self):
+        tree = self.root/'tree'; tree.mkdir()
+        (tree/'scripts').symlink_to(SCRIPTS, target_is_directory=True)
+        python = tree/'.venv/bin/python'
+        python.parent.mkdir(parents=True)
+        python.symlink_to(sys.executable)
+        return tree
+
     def test_real_ticket_signature_byte_order(self):
         self.assertEqual(ticket()[:4], b'\x04\x00\x01\x00')
         raw = partition([('ticket.tik', ticket())])
@@ -71,9 +79,7 @@ class Updates(unittest.TestCase):
         self.assertIn('Expected a BKTR update', result.stderr)
 
     def test_wrong_version_stops_before_rewrite(self):
-        tree = self.root/'tree'; tree.mkdir()
-        (tree/'scripts').symlink_to(SCRIPTS, target_is_directory=True)
-        (tree/'.venv').symlink_to(sys.prefix, target_is_directory=True)
+        tree = self.fixture_tree()
         with patch.dict(build_app.UPDATED, {'exefs_sha256': {'main': build_app.UPDATED['exefs_sha256']['main']}}), self.assertRaisesRegex(build_app.BuildError, 'ExeFS main'):
             build_app.step_code(tree, self.update, self.keys, os.environ, self.root/'logs', version='v112')
         self.assertFalse((tree/'rewritten').exists())
@@ -97,9 +103,7 @@ class Updates(unittest.TestCase):
 
     def test_v143_identified_by_content_and_cached(self):
         import hashlib
-        tree = self.root/'tree'; tree.mkdir()
-        (tree/'scripts').symlink_to(SCRIPTS, target_is_directory=True)
-        (tree/'.venv').symlink_to(sys.prefix, target_is_directory=True)
+        tree = self.fixture_tree()
         # Deliberately misleading filename: selection must use the module bytes.
         source = self.root/'1.1.2.nsp'; source.write_bytes(self.update.read_bytes())
         expected = {name: hashlib.sha256(data).hexdigest() for name, data in (('main', b'synthetic main'), ('main.npdm', b'synthetic metadata'))}

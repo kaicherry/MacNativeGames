@@ -1,0 +1,2 @@
+These are this project's own paid-for faults, appended as they are met; a listed fault that repeats is a defect in whatever repeated it.
+1. **Do not symlink a fixture `.venv` to `sys.prefix` when tests invoke `.venv/bin/python`.** The prefix may contain only a versioned executable such as `python3.14`, leaving the unversioned path absent. Create the fixture's `.venv/bin/python` and link it to `sys.executable`.
