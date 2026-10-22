@@ -1,49 +1,54 @@
 ---
-slice: unknown
+slice: S0.3
 stateFile: docs/STATE.md
 donotCount: 1
-seededFrom: e55ad1c25078e19560c88b7c8fd30192c3de3a6d
+seededFrom: f117adb2299e61ce1d99a21b31a2f3c121482bf5
 ---
 
-# Next slice — unknown
+# Next slice — S0.3: NFS startup call and provider evidence
 
 ## The next action — verbatim
 
-Unknown — S0.1 is complete. Await operator review and a newly seeded task before any port implementation.
+S0.3 — Use an available function-level static-analysis path on the existing hash-verified NFS analysis carriers to trace startup from `nnMain` to the first `nvnBootstrapLoader`/NVN operation and presentation, and to the earliest `nifm`/socket/friends calls; identify whether the three `DT_NEEDED` `.nss` names and `nnosGetDefaultUserExceptionStackForApplication` are provided by package modules or remain external. Distinguish linked, statically reachable, and runtime-observed facts. If no safe supported analyzer can establish a path or provider, record that exact blocker and split it; do not install tools or edit port code.
 
 ## What is settled — do not re-derive
 
-- S0.1's evidence-based feasibility report is `docs/nfs-port-feasibility.md`.
-- The staged local NSP's NCA title ID and `main.npdm` program ID match at `010029B0118E8000`; all five NCA headers were readable with the local keys/common ticket, and ExeFS header/table/block verification passed. NCA RSA signatures and RomFS/IVFC remain unverified.
-- ExeFS contains `rtld`, `main`, `sdk`, `subsdk0`, and `subsdk1`. Static symbol matching found a `main` import supplied by `subsdk1`; current project loader documentation covers `main`, `sdk`, and `subsdk0` only. NFS build/title selection, SDK version, service use, boot, and gameplay remain unresolved.
-- Feasibility is a conditional GO for bounded Stage 1 investigation, not a bootability/playability claim. No source/runtime code was changed.
-- The local NSP, keys, extracted modules, and analysis carriers are Git-ignored and must not be committed. The Hopper Demo workflow for this system is recorded in the private `.operator/guides/hopper-demo.md`; do not retry the REA bridge.
-- Both baseline test commands passed 255 tests with one skip; each emitted a non-fatal subprocess `ResourceWarning`. The existing RED-baseline hold is closed.
-- No new Do-Not fault was found; Do-Not #1 remains unchanged. S0.1's boundary linkage/path checks were not run because no code, script, or build file changed.
-- The source index is the private Operator index. The next task, its code scope, and its named specs are not selected yet.
+- S0.2 evidence and blockers are recorded in `docs/nfs-port-feasibility.md`; no implementation GO was given, and there is no bootability or gameplay claim.
+- ExeFS includes `subsdk1`. The report lists `main`'s three `.nss` `DT_NEEDED` strings and one unresolved SDK import, `nnosGetDefaultUserExceptionStackForApplication`; their providers remain unresolved.
+- NPDM was decoded. Raw SVC candidates are not proof of execution; import and bounded call-site references do not prove reachability. First-call ordering remains unresolved.
+- Existing carriers are hash-verified. Preserve the ignored evidence at `.babysteps/scratch/S0.1-NFS-feasibility/` and `.babysteps/scratch/S0.2-NFS-feasibility/`; do not rerun title-bound extraction.
+- The S0.2 hactool source pin is `1d64a83450e025622f3468c28fc4164dad2c5ef6`.
+- The configured full baseline passed 255 tests, 1 skipped, with a non-fatal subprocess `ResourceWarning`. No new Do-Not fault was found.
 
 ## Withdrawn — proven wrong, do not use
 
-- No new withdrawn numbers. The previous RED-baseline operator-decision hold remains closed.
+- No new withdrawn numbers.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| Unknown | Unknown until the next task is selected; do not infer a port implementation scope from S0.1. |
+| S0.3 evidence report | `docs/nfs-port-feasibility.md` only. |
+| Port source/runtime/build | None — no port code edits. |
 
 ## Read these first, and only these
 
-- Unknown until a new task is selected. Choose its specs at that time; do not carry forward S0.1's spec list by default.
+- `docs/nfs-port-feasibility.md` — “S0.2 — Static linkage, permissions, and bounded call-site evidence”, “Closeout”.
+- `docs/how-it-works.md` — “The code”, “The operating system”, “The graphics”.
+- `.operator/guides/hopper-demo.md` — “Known limits”, “Manual read path”.
+- `.opencode/commands/babysteps-exploration.md` — “Call discipline”.
+- `.operator/index/games/totk.md` — “Architecture”.
+- `.operator/index/games/by3.md` — “Architecture”.
 
 ## Do-Not entries that apply here
 
-- Unknown until the next task is selected. Current Do-Not count is 1; choose entries by number only after the task is known.
+- None. Current Do-Not count is 1; #1 is unrelated.
 
 ## The gate
 
-- No task-specific gate is known until the next action is selected. The configured baseline is `python -m unittest discover -s tests`; `runCommand` remains empty.
+- `python -m unittest discover -s tests` (configured baseline).
+- Evidence gate: function-level startup call order or explicit tool/provider blockers and splits; `.nss` and `nnosGetDefaultUserExceptionStackForApplication` provider status; linked, permitted, statically reachable, and runtime-observed claims kept distinct; no code edits.
 
 ## When this slice closes
 
-Replace this unknown seed with the next task's filtered brief before starting another work unit. Keep state write-ups in `docs/STATE.md` and Do-Not faults in `docs/donot.md`.
+Close when the report traces those startup calls with function-level evidence or records a precise tool/provider blocker and splits unresolved questions; `.nss` and `nnosGetDefaultUserExceptionStackForApplication` providers are identified or explicitly unresolved; linked, permitted, statically reachable, and runtime-observed claims are distinct; the configured baseline passes; and no port code is changed. Make no bootability or gameplay claim.

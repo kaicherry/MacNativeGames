@@ -4,7 +4,7 @@
 
 On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
 
-**The next action** is Unknown — S0.1 is complete; await operator review and a newly seeded task before any port implementation.
+**The next action** is S0.3 — Use an available function-level static-analysis path on the existing hash-verified NFS analysis carriers to trace startup from `nnMain` to the first `nvnBootstrapLoader`/NVN operation and presentation, and to the earliest `nifm`/socket/friends calls; identify whether the three `DT_NEEDED` `.nss` names and `nnosGetDefaultUserExceptionStackForApplication` are provided by package modules or remain external. Distinguish linked, statically reachable, and runtime-observed facts. If no safe supported analyzer can establish a path or provider, record that exact blocker and split it; do not install tools or edit port code.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
@@ -12,15 +12,17 @@ The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified a
 
 ## Next action
 
-**S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code.**
+S0.3 — Use an available function-level static-analysis path on the existing hash-verified NFS analysis carriers to trace startup from `nnMain` to the first `nvnBootstrapLoader`/NVN operation and presentation, and to the earliest `nifm`/socket/friends calls; identify whether the three `DT_NEEDED` `.nss` names and `nnosGetDefaultUserExceptionStackForApplication` are provided by package modules or remain external. Distinguish linked, statically reachable, and runtime-observed facts. If no safe supported analyzer can establish a path or provider, record that exact blocker and split it; do not install tools or edit port code.
 
-Gate: The only expected new project artifact, `docs/nfs-port-feasibility.md`, must record attributed evidence for title/build/version scope, module layout, ARM64/rewrite fit, SDK, graphics/API and service surface, unknowns, and go/no-go; tracked files must contain no game content or secrets. The exact baseline gate passed: `python -m unittest discover -s tests` under Python 3.15 and `python3.14 -m unittest discover -s tests` under Python 3.14 each passed 255 tests, with 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; the suite is not red.
+Gate: `python -m unittest discover -s tests` passes; `docs/nfs-port-feasibility.md` records function-level startup call order or a precise analyzer/provider blocker and split, identifies or explicitly leaves unresolved the `.nss` and `nnosGetDefaultUserExceptionStackForApplication` providers, and distinguishes linked, permitted, statically reachable, and runtime-observed facts. No port code changes.
+
+Close when the report traces those startup calls with function-level evidence or records a precise tool/provider blocker and splits unresolved questions; `.nss` and `nnosGetDefaultUserExceptionStackForApplication` providers are identified or explicitly unresolved; linked, permitted, statically reachable, and runtime-observed claims are distinct; the configured baseline passes; and no port code is changed. Make no bootability or gameplay claim.
 
 **The Do-Not list is `docs/donot.md`** — 1 entry, append-only. Never dropped, never trimmed.
 
 ## Completed
 
-No NFS port task is complete. The test fixture repair is complete, but it is not an NFS port task.
+S0.1 and S0.2 evidence tasks are complete; no NFS implementation is complete. The test fixture repair is complete, but it is not an NFS port task.
 
 ## In progress
 
@@ -28,10 +30,11 @@ No NFS port task is in progress.
 
 ## Queued
 
-The following are approved candidate work units, not ready-to-execute tasks. Preflight each against the 350,000 planned work-unit ceiling and split further before work if it does not fit; this is not a host-enforced live cutoff and no automatic stop is promised.
+The roadmap below contains approved candidate work units. S0.3 is promoted as the next evidence-only task; preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
 
-- S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code. **NEXT**
-- S0.2 — Map rewrite/SDK/NVN/services and decide go/no-go.
+- S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code. **DONE**
+- S0.2 — Use existing package/module analysis tools to map loading, rewrite/SDK, NVN, and service requirements; decide go/no-go for defining S1 implementation work. **DONE**
+- S0.3 — Trace function-level startup and package providers on the existing NFS analysis carriers; record a precise blocker and split if no safe supported analyzer can answer. **NEXT**
 
 ### S1 — Game-specific build and runtime bootstrap (approved)
 
@@ -67,4 +70,11 @@ The following are approved candidate work units, not ready-to-execute tasks. Pre
 - Report: `docs/nfs-port-feasibility.md`; preliminary conditional GO for a bounded Stage 1 investigation only. No boot or playability claim; no source/runtime code changed.
 - Both baseline test runs passed 255 tests with one skip; each emitted a non-fatal subprocess `ResourceWarning`.
 - Boundary linkage and path checks were not run because the slice changed no code, scripts, or build files. No new paid-for fault was found; Do-Not #1 remains unchanged.
-- Next action is unknown pending operator review and a newly seeded task.
+- S0.1 closed with S0.2 promoted as the next evidence-only task.
+
+### S0.2 — Static linkage, permissions, and bounded call-site evidence (2026-10-21)
+
+- Report: `docs/nfs-port-feasibility.md`; the hactool source pin is `1d64a83450e025622f3468c28fc4164dad2c5ef6`.
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, with a non-fatal subprocess `ResourceWarning`.
+- Both boundary checks were not run (documentation-only). No new Do-Not fault was found; the current count remains 1.
+- Retain `.babysteps/scratch/S0.1-NFS-feasibility/` and `.babysteps/scratch/S0.2-NFS-feasibility/` for the follow-up. S0.2 is complete; S0.3 is promoted as the next evidence-only task.
