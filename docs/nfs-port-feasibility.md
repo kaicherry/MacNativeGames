@@ -154,3 +154,49 @@ Next evidence: (a) resolve the indirect NVN present target and capture a runtime
 - `.babysteps/scratch/S0.3-NFS-startup/main-disasm.txt` — full LLVM disassembly used for the direct-call graph.
 - `.operator/guides/hopper-demo.md`, “Known limits”, “Manual read path” — Hopper access path and its documented limits.
 - Addresses: `0x2d2fd0`, `0x2d30b8`, `0x2a8164`, `0x3d4500`, `0x3d4730`, `0x7684f0`, `0x768c14`, `0x76e6f0`, `0x76e700`, `0x76e714`, `0x76a220`, `0x76a284`, `0x76a8c0`, `0x76aa9c`, `0x76aaf0`, `0x6411b0`, `0x6411c0`, `0x64121c`, `0x2087d38`, `0x7f3c00`.
+
+## S1.1 — Extraction and build manifest
+
+Read-only scoping. No port code, runtime code, or manifest file was added; no bootability or gameplay claim. Scratch: `.babysteps/scratch/S1.1-NFS-manifest/`.
+
+### Reusable helpers, and the exact form
+
+- **ExeFS extraction is reusable as-is through the BY3 title-parameterized path.** `games/by3/scripts/extract_code.py` takes `--title` and resolves the Program NCA through `program_header(f, entries, keys, title)` (`games/by3/scripts/merge_romfs.py`). This command was run and completed in 1.2 s:
+  `python3 games/by3/scripts/extract_code.py game.nsp --keys prod.keys --title 010029B0118E8000 --output <scratch>/exefs`
+  Its manifest (`.babysteps/scratch/S1.1-NFS-manifest/extraction-manifest.json`) reports the same six files and byte-identical SHA-256 values as the S0.1 extraction. That is the reuse proof.
+- **`games/totk/scripts/extract_exefs.py` is not reusable.** `program_nca` (`:160-178`) requires title `0100F2C0115B6000` and rejects any other package.
+- **Both `extract_romfs.py` copies are not reusable.** They call `program_nca(nca_inventory(...))` with the TOTK hardcode, so RomFS extraction needs the title parameter that `program_header` already accepts.
+- **`games/by3/scripts/prepare_modules.py` is reusable for analysis carriers only, with one change.** Its default module list is `['rtld', 'main', 'sdk', 'subsdk0']` (`:215-230`); NFS has a sixth module, `subsdk1`, so the list must include it. Its output is an ELF carrier, not a runnable program. It needs Python `lz4`, which the system interpreter lacks (S0.1 wrapped system `liblz4`; no dependency was added then or now).
+- **The rewriter is untested on these modules.** `third_party/d2r/patch_nso.py` with `DM_RULESET=native` is what `step_code` invokes; nothing in S0.x ran it against NFS code.
+
+### Build manifest: the exact files and inputs
+
+`build_app.py` is TOTK/BOTW-only at module scope: `GAME`/`BOTW` (`:49,60`), the manifest loads (`:52-55,61`), `VERSIONS` (`:56`), `TITLES` (`:64`), `APPS` (`:67`). A third title is not a drop-in; it needs a `games/nfs/` tree plus entries in each.
+
+- Per-version manifest: `games/<game>/assets/expected-v<display>.json`, listed in `VERSIONS`. Required keys, from `games/totk/assets/expected-v1.4.3.json`: `title_id`, `version` (integer), `display_version`, `exefs_sha256`, `rewritten_sha256`, `romfs{size,sha256}`, `shared_fonts_sha256`.
+- `version` is the CNMT version, not a function of the display string: TOTK 1.4.3 is `720896` (`0xB0000`) and BOTW 1.6.0 is `786432` (`0xC0000`). It cannot be inferred, so it gates the manifest filename as well as its contents.
+- Output paths `step_code` writes into the work tree (`prepare_work`: `work/totk` ← rsync of `GAME`, excluding `extracted/ rewritten/ build/ analysis/ .venv/ tooling/ user-data/`): `extracted/<version>/exefs/` and `extraction-manifest.json`; `extracted/<version>/elf/`; `rewritten/<version>/{main,sdk,subsdk0}.patched.bin`; `analysis/phase12-validation.json` (v0) or `analysis/<version>-port/phase12-validation.json`; logs `extract_exefs-<version>.log`, `prepare_modules.log`, `rewrite_<version>_<module>.log`.
+
+### Inputs with hashes
+
+- Source: `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, 7,388,586,538 bytes, 11 entries, 5 NCAs, 1 ticket. No whole-package SHA-256; S0.1 recorded that limit and a retry here did not change it. Identity is carried by the Program NCA and the per-file hashes below.
+- Program NCA `a040a32c4a4389eb6ad4baeecb97740c.nca`, offset 736, size 7,387,971,584, `content_type` 0, title `010029B0118E8000`.
+- ExeFS, all hashes matched between the S0.1 extraction and the S1.1 re-extraction: `main` 6,906,316 / `721afa1df58eefe388b0630267f9f7ae09d29a95c54136ff770fd6981a76ae5e`; `main.npdm` 1,540 / `c0b0163c578584ea4beb1165705b91bd55de21ae3f648763387797e84f7a48a3`; `rtld` 7,223 / `e1b018d97186c07e69d1203326183dddcd575af8fe192433b848c30ca650eb82`; `sdk` 5,619,621 / `c54bf6080c82b1946574714e7bac2a1d2b15cc7e1198785bde0b95b393ead722`; `subsdk0` 4,501,008 / `6afb3c974222876eae903a645b1da2abcd896c4fd5ff77e26cb2d6f6e77eb185`; `subsdk1` 3,397,429 / `efc5c92a4b55ff050d040f1236f02663ccfdfab14a80e59f312c38e23449860f`.
+- Meta NCA `8938618b1d4bb12519520df058f8ab10.cnmt.nca`, offset 7,388,511,456, size 3,584, `content_type` 1; its NCA header reports SDK version **10.4.0.0**, which matches the `NFS_10_4_1` path embedded in `main`'s `DT_NEEDED` strings.
+- That meta NCA's section 0 is a 400-byte PFS0 holding one 304-byte `Application_010029b0118e8000.cnmt`, and the payload does **not** begin with `CNMT` (it begins `00 80 8e 11 b0 29 00 01`). So the version integer was not read, and the layout is not yet explained.
+
+### Staged package contents
+
+One Program NCA and no BKTR: this is a base package, so extraction does not need an update container, and `prepare_update_container` / `identify_update` do not apply. The other four NCAs are `content_type` 2 (control) at offset 7,387,972,320 size 287,744; two `content_type` 3 at 7,388,260,064 size 136,704 and 7,388,396,768 size 114,688; and the meta at 7,388,511,456.
+
+### Closeout
+
+Manifest identified; extraction reuse proven by identical hashes; nothing built and nothing run. Splits: (a) decode the CNMT so `version` and `display_version` are read rather than inferred, before any `expected-*.json` exists; (b) run the three-or-four module rewrites to obtain `rewritten_sha256`; (c) extract RomFS with a title-parameterized extractor for `romfs{size,sha256}`; (d) establish the `shared_fonts_sha256` six-font input for a package with no system update partition; (e) add `subsdk1` to whatever module list the runtime load set uses.
+
+## S1.1 source references
+
+- `.babysteps/scratch/S1.1-NFS-manifest/extraction-manifest.json`, `exefs/`, `meta/cnmt.nca`, `meta/section0.bin`, `meta/pfs0/` — re-extraction, per-file hashes, and the CNMT decode attempt.
+- `games/by3/scripts/extract_code.py:11-14,17-60`; `games/by3/scripts/merge_romfs.py` (`open_program`, `program_header`, `BASE_TITLE`); `games/by3/scripts/prepare_modules.py:25,215-230`.
+- `games/totk/scripts/extract_exefs.py:160-178`; `games/totk/scripts/extract_romfs.py:main`; `games/by3/scripts/extract_romfs.py:main`.
+- `build_app.py:48-70,307-336,340-357,499-566`; `games/totk/assets/expected-v1.4.3.json`; `games/botw/assets/expected-v1.6.0.json`; `games/by3/assets/expected-v1.2.0.json`.
+- `.babysteps/scratch/S0.2-NFS-feasibility/work/src/hactool/hactool` — pinned hactool used for the meta NCA header and section dump.

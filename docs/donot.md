@@ -1,2 +1,3 @@
 These are this project's own paid-for faults, appended as they are met; a listed fault that repeats is a defect in whatever repeated it.
 1. **Do not symlink a fixture `.venv` to `sys.prefix` when tests invoke `.venv/bin/python`.** The prefix may contain only a versioned executable such as `python3.14`, leaving the unversioned path absent. Create the fixture's `.venv/bin/python` and link it to `sys.executable`.
+2. **Do not hash the whole multi-GB NSP.** `shasum -a 256` over the 7.39 GB `game.nsp` exceeds the 120 s shell limit and returns nothing, so the attempt buys no number and loses the window. Use the per-file ExeFS hashes and the Program NCA identity; a whole-package digest needs a longer, explicitly-sized run.
