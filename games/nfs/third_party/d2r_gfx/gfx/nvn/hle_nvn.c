@@ -173,13 +173,19 @@ static const int g_devinfo[] = {
     [0x4E] = 1024, [0x4F] = 32, [0x50] = 4096, [0x51] = 65536, [0x52] = 65536, [0x53] = 256, [0x54] = 16384,
     [0x55] = 262144, [0x56] = 4096, [0x57] = 1, [0x58] = 4, [0x59] = 2, [0x5A] = 0, [0x5B] = 4096, [0x5C] = 16384,
     [0x5D] = 4096, [0x5E] = 128, [0x5F] = 4096,
+    // 0x60 NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID: debug-only query for the maximum debug-group domain ID;
+    // not measured on any NX game (SMO table ends at 0x5F). Classified as a debug feature: the HLE does not
+    // implement debug groups, so return 0 so the game treats it as "no debug-group support".
+    // 0x61 NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS: boolean feature flag for NVN event reduction.
+    // Not measured on any NX game. Classified as a feature flag: the HLE events path does not implement reduction,
+    // so return 0 so the game falls back to non-reduced event behavior.
+    [0x60] = 0, [0x61] = 0,
 };
+#define NVN_DEVINFO_COUNT (sizeof g_devinfo / sizeof *g_devinfo)
 NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out) {
     (void)d;
     unsigned w = (unsigned)what;
-    // 0x5F 分离采样器绑定数、0x60/0x61 在 SMO 实测表里没有：0x5F 按采样器池上限给 4096 未核，0x60/0x61 报红给 0
-    // 0x5F separate sampler binding count and 0x60/0x61 are not in the table measured on SMO: 0x5F is given 4096 per the sampler pool limit, unverified; 0x60/0x61 report a failure and return 0
-    if (w >= sizeof g_devinfo / sizeof *g_devinfo) { die("unsupported NVN device property %#x", w); }
+    if (w >= NVN_DEVINFO_COUNT) { die("unsupported NVN device property %#x", w); }
     *out = g_devinfo[w];
     /* DM_NVN_GPU_CODE_MAX_MINOR (14..31): the newest GLSLC GPU code minor version accepted. The measured driver says 14;
        Bayonetta 3 mixes 1.15, 1.16 and maybe newer binaries, and its runtime sets 31. TOTK keeps the measured value. */
