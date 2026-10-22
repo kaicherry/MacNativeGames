@@ -428,3 +428,112 @@ Closes-when met: the `games/nfs/` tree wired through `build_app.py` rebuilds NFS
 - `games/nfs/scripts/{extract_code.py,extract_romfs.py,prepare_modules.py,prepare_runtime.py}`
 - `games/nfs/runtime/loader.c` (load-set, seal, boot logging)
 - `build_app.py` (NFS registration and `step_code_nfs`/`step_data_nfs`)
+
+## S2.1 — The window-path blockers and the required NVN surface
+
+Implementation and observation slice (2026-10-22). The two S1.3 window-path blockers are cleared with
+evidence, the NVN surface the S0.3 `nvnBootstrapLoader` chain reaches is mapped with every row tied to a
+recorded observation, and the chain's runtime reach is recorded to its stop. No gameplay claim.
+
+### The windowed blocker: display link initialization
+
+- S1.3's `FAIL: native display link initialization` covered three calls behind one `runtime_fail`, so the
+  record can never say which returned -6661 (Do-Not #5). Each call's CVReturn is now logged at the site,
+  and the create path retries the chosen screen's display id before falling back to a host timer.
+- Standalone probe in this session (`dlprobe.m`/`dlprobe.out`, scratch), macOS 27.0.0, console session
+  (`onConsole=1`): **two active displays** (2: 1920x1080, nominal refresh 0.0083335 s; 4: 1314x985,
+  0.0166667 s). `CVDisplayLinkCreateWithActiveCGDisplays` returned **0 in all three contexts** (bare,
+  after `NSApplication`, after an NSWindow + CAMetalLayer); every `CVDisplayLinkCreateWithCGDisplays`
+  variant, `SetOutputCallback` and `Start` also 0. An offscreen `CAMetalLayer` produced a drawable
+  with a texture.
+- The S1.3 record's -6661 is `kCVReturnInvalidArgument`, the code `CVDisplayLinkCreateWithActiveCGDisplays`
+  reports when there is no active display to bind; the run it came from was 03:40 local, unattended. Bounded
+  claim: the failure is environmental (consistent with the machine's displays being asleep), **not** API
+  breakage — the identical call succeeds on the same OS build when displays are awake. The asleep state was
+  not re-created directly, and which of the three calls failed then stays unattributed.
+- The fallback (host timer at the screen's `maximumFramesPerSecond`, 30..240 else 60 Hz, same
+  `vsync_signal()` the display-link callback uses) was **not exercised**: both runs had their display link up.
+- Windowed run (log kept): `window drawable 1815x1017 (scale 1)` then **`[nfs] display link running
+  (nominal refresh 0.0083335s)`** — the S1.3 FAIL line passes and the guest thread starts.
+
+### The headless blocker: VI requires a native window
+
+- `vi_initialize` hard-failed whenever no window had been built (`metalLayer` unset), which is every
+  headless boot. The VI display now gets an **offscreen CAMetalLayer stand-in** (1920x1080, the docked
+  output size the windowed path opens) so the guest's `GetNativeWindow` hands out a real layer and the boot
+  stays observable without one; nothing reaches a screen through it. The probe showed an offscreen layer
+  yields drawables in this session.
+- Headless run (log kept): `[nfs] VI display initialized on an offscreen layer 1920x1080 (headless: no
+  native window)` — the S1.3 FAIL line passes and the boot continues into the NVN chain.
+
+### The required NVN surface
+
+Each row is tied to the S0.3 chain evidence (addresses) or the S2.1 boot logs; nothing extends past them.
+
+| NVN entry | How the chain reaches it | Runtime (S2.1 runs) | HLE status |
+| --- | --- | --- | --- |
+| `nvnBootstrapLoader` | `main` import; PLT stub `0x7f3c00`, call `0x76e6f0` (S0.3) | **called** with `"nvnDeviceGetProcAddress"` (both logs) | HLE_FORCE takeover (`hle_nvn.c`) |
+| `nvnDeviceGetProcAddress` | name at `0x916c3f`, the chain's argument (S0.3) | **resolved and used**: 516 name-table entries taken through it | semantic (`hle_nvn.c:146`) |
+| `nvnDeviceInitialize` | name resolution `0x76a284` in `sub_76a220` (S0.3) | **resolved, then called** (OLOG) | semantic |
+| `nvnQueuePresentTexture` | name resolution `0x76a8c0` (S0.3) | resolved; **not called** (no present reached) | semantic (`hle_nvn.c:2877`) |
+| `nvnWindowAcquireTexture` | name resolution `0x76aa9c` (S0.3) | resolved; not called | semantic (`hle_nvn.c:2463`) |
+| `nvnWindowSetPresentInterval` | name resolution `0x76aaf0` (S0.3) | resolved; not called | semantic (`hle_nvn.c:2418`) |
+| dispatch through `[0xd37000+0x3d0]` | `blr x8` at `0x76e714` (S0.3) | **not established** (indirect) | — |
+
+Runtime-observed beyond the static set: `nvnQueueInitialize` (called), `nvnDeviceGetInteger` (called),
+`nvnDeviceSetDepthMode` and `nvnDeviceSetWindowOriginMode` (called). The boot log's inventory line stands:
+523 names, 424 implemented (417 semantic + 7 nop), 99 report-on-call red stubs.
+
+### The chain at runtime: reach and stop
+
+Both modes agree line-for-line from the bootstrap call to the stop.
+
+1. `[nfs] nvnBootstrapLoader("nvnDeviceGetProcAddress")` — the endpoint string S0.3 found at `0x916c3f`
+   is what the game passes.
+2. **516 of 523** name-table entries resolved through `nvnDeviceGetProcAddress`, each once (first-seen log,
+   `DM_NVN_LOG=1`, `hle_nvn.c` `nvn_lookup`). The **7 never requested** are all debug-checkpoint entries:
+   `nvnCommandBufferInsertCheckpointStatic/Dynamic`, `nvnDeviceSetAutomaticCheckpointsEnable`,
+   `…SamplingInterval`, `…ByDebugGroup`, `nvnDeviceSetCheckpointCallStacksEnable`,
+   `nvnDeviceSetCheckpointMaxCallStacksDepth`. No unknown name was queried (zero red reports).
+3. Called after resolution: `nvnDeviceInitialize`, `nvnQueueInitialize`, `nvnDeviceSetDepthMode`,
+   `nvnDeviceSetWindowOriginMode`.
+4. `nvnDeviceGetInteger` answered **96 properties, `0x00`–`0x5f`** (the Tegra X1 measured table), then
+   **stopped at `0x60`** — `die("unsupported NVN device property 0x60")`, exit 2. The header names the
+   constant: `NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID` (`nvn.h:328`; `0x61` is
+   `NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS`). The HLE table ends at `0x5F` because the
+   measured NX values end there; what the Switch answers for `0x60`+ is not established.
+
+Not observed: any `nvnQueuePresentTexture`/`nvnWindowAcquireTexture`/`nvnWindowSetPresentInterval` call,
+the indirect first-present target, any present, frame, audio, or gameplay.
+
+### Claim separation
+
+- Statically reachable (S0.3, unchanged): the table's "how the chain reaches it" column.
+- Runtime-observed (S2.1 logs): the endpoint call and argument, 516 resolutions, the four calls in step 3,
+  96 property answers, the stop at `0x60`.
+- Resolved-or-split with evidence: both window-path blockers (cleared; the timer fallback and the asleep
+  attribution remain the split parts, both bounded above).
+- Provider/identity questions: S1.3's boundary stands; nothing here extends it.
+
+### Gate
+
+`python3 -m unittest discover -s tests` — 255 tests, 1 skipped, exit 0. Boundary check on this slice's diff
+(`games/nfs/runtime/frontend.m`, `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c`): linkage and paths clean —
+no reach into `games/totk` or `games/by3`; the new calls are system frameworks the Makefile already links.
+
+### Closeout
+
+Closes-when met: the required NVN surface is mapped with each mapping tied to a recorded observation, both
+window-path blockers are cleared with the split parts bounded, the S0.3 chain's runtime reach is recorded to
+its stop at device property `0x60`, the configured baseline passes, and no claim extends past what was run.
+Splits carried: (a) the device-constant surface past `0x5F` and what the game does after `0x60` is answered
+→ next slice; (b) the indirect first-present target and a runtime first-present trace; (c) the
+`sub_63fea0` indirect/thread entry path → S3.2; (d) the timer-vsync fallback is unexercised; (e) the asleep
+display state that produced S1.3's -6661 was not re-created.
+
+## S2.1 source references
+
+- `.babysteps/scratch/S2.1-NFS-nvn-surface/{surface-map.json,boot-headless.log,boot-windowed.log,dlprobe.m,dlprobe.out}` — the map record, both bounded run logs, and the display-link probe.
+- `games/nfs/runtime/frontend.m` — display-link fallback and the offscreen VI layer (`vsync_signal`, `vi_initialize`).
+- `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c:104` — `nvn_lookup` first-seen resolution log (DM_NVN_LOG).
+- `games/nfs/third_party/d2r_gfx/gfx/nvn/include/nvn.h:321-331` — `NVNdeviceInfo` values naming the stop.

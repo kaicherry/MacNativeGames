@@ -104,7 +104,13 @@ void *runtime_hle_wrap_named(void *fn, const char *name);   // the same, with th
 static void *nvn_lookup(const char *name) {
     nvn_init_slots();
     for (unsigned i = 0; i < NVN_NFUNC; i++)
-        if (!strcmp(nvn_names[i], name)) return nvn_thunk[i];
+        if (!strcmp(nvn_names[i], name)) {
+            /* The game resolves an entry once and keeps the pointer, so the first-seen log (DM_NVN_LOG) is the
+               runtime-resolved surface; logging every lookup instead would reprint the name table on each pass. */
+            static _Atomic unsigned char seen[NVN_NFUNC];
+            if (g_log && !atomic_exchange(&seen[i], 1)) LOG("[nfs] NVN name resolved: %s", nvn_names[i]);
+            return nvn_thunk[i];
+        }
     unsigned long sz = 0;
     const nvn_impl *ex = (const nvn_impl *)getsectiondata(&_mh_execute_header, "__DATA", "totknvnx", &sz);
     for (unsigned k = 0; ex && name && k < sz / sizeof *ex; k++) if (!strcmp(ex[k].name, name)) return ex[k].fn;

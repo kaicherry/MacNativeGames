@@ -92,9 +92,12 @@ static int assume_focus(void){static int v=-1;if(v<0){const char *e=getenv("TOTK
 /* Keep the guest active when the macOS window loses key status. Native input is still cleared
    in windowDidResignKey so a held key cannot remain stuck while another app has focus. */
 int runtime_front_focus(void){return 1;}
+/* Every registered VI display event is signaled from whatever paces the display, and it must also fire when
+   no display link exists, because the guest's frame pacing waits on these events and a dead source is a hang. */
+static void vsync_signal(void){pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);}
 static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,const CVTimeStamp *output,CVOptionFlags flags,CVOptionFlags *out,void *ctx){
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
- pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
+ vsync_signal();return kCVReturnSuccess;
 }
 @interface TOTKInputView:NSView
 @end
@@ -255,7 +258,26 @@ void runtime_front_run(void(*callback)(void)){
   {const char *fs=getenv("NFS_FULLSCREEN");if(fs&&!strcmp(fs,"1"))dispatch_async(dispatch_get_main_queue(),^{if(!(window.styleMask&NSWindowStyleMaskFullScreen))[window toggleFullScreen:nil];});}
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
-  if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");
+  /* The vsync source must come up whatever this session's displays are doing: an unattended run (2026-10-22, 03:40,
+     displays asleep) got CVReturn -6661 (kCVReturnInvalidArgument) here and the abort took the guest thread with it.
+     Three attempts in order — active displays, the chosen screen's display id, a host timer — and every code is
+     logged, because which one took is the only record of what this session's displays allowed. */
+  {CVReturn dl=CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
+   if(dl){CGDirectDisplayID did=screen?[screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue]:0;
+          if(!did)did=CGMainDisplayID();
+          fprintf(stderr,"[nfs] display link: create with active displays CVReturn %d; retrying display %u\n",dl,(unsigned)did);
+          dl=CVDisplayLinkCreateWithCGDisplays(&did,1,&displayLink);}
+   if(!dl)dl=CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL);
+   if(!dl)dl=CVDisplayLinkStart(displayLink);
+   if(dl){long hz=screen?screen.maximumFramesPerSecond:0;if(hz<30||hz>240)hz=60;
+          if(displayLink){CVDisplayLinkRelease(displayLink);displayLink=NULL;}
+          fprintf(stderr,"[nfs] display link unavailable (CVReturn %d): vsync signaled by a host timer at %ld Hz, not display-paced\n",dl,hz);
+          static dispatch_source_t vsyncTimer;vsyncTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());
+          if(!vsyncTimer)runtime_fail("vsync: no display link and no host timer");
+          dispatch_source_set_timer(vsyncTimer,dispatch_time(DISPATCH_TIME_NOW,0),(uint64_t)(NSEC_PER_SEC/hz),NSEC_PER_MSEC);
+          dispatch_source_set_event_handler(vsyncTimer,^{vsync_signal();});dispatch_resume(vsyncTimer);}
+   else fprintf(stderr,"[nfs] display link running (nominal refresh %gs)\n",
+                (double)CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink).timeValue/(double)CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink).timeScale);}
   pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
   [NSApp run];runtime_fail("native event loop returned unexpectedly");
  }
@@ -350,7 +372,17 @@ int runtime_front_text_input(const RuntimeTextRequest *req,char *out,size_t out_
 }
 static int viReady;
 static unsigned displayIdentity,layerIdentity;
-static void vi_initialize(void){if(!metalLayer)runtime_fail("VI requires native macOS window");viReady=1;fprintf(stderr,"[nfs] native VI display initialized\n");}
+/* The VI display needs a real CAMetalLayer even with no window, because the guest builds its NVN window on the
+   native handle GetNativeWindow hands out; the offscreen stand-in is that layer and reaches no screen. */
+static void vi_initialize(void){
+ if(!metalLayer){
+  const CGSize kDockedOutput={1920,1080};   /* the docked output size the windowed path would have opened */
+  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+  metalLayer.framebufferOnly=NO;metalLayer.drawableSize=kDockedOutput;
+  fprintf(stderr,"[nfs] VI display initialized on an offscreen layer %.0fx%.0f (headless: no native window)\n",kDockedOutput.width,kDockedOutput.height);
+ }else fprintf(stderr,"[nfs] native VI display initialized\n");
+ viReady=1;
+}
 static uint32_t vi_open(void **out){if(!viReady||!out)return 0xf601;*out=&displayIdentity;return 0;}
 static uint32_t vi_layer(void **out,void *display){if(!out||display!=&displayIdentity)return 0xf601;*out=&layerIdentity;return 0;}
 static uint32_t vi_window(void **out,void *layer){if(!out||layer!=&layerIdentity)return 0xf601;*out=front_metal_layer();return 0;}
