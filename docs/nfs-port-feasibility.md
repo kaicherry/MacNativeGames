@@ -82,3 +82,75 @@ No implementation GO. Conditional GO is limited to defining a focused follow-up 
 - `build_app.py:68,737-834` — pinned hactool build path.
 - `games/by3/scripts/prepare_modules.py:25-212` — analysis-carrier conversion.
 - `.operator/guides/hopper-demo.md:3-7`, “Known limits” — local REA/Hopper limitation.
+
+## S0.3 — Function-level startup and provider evidence
+
+### Inputs and method
+
+This pass reused `.babysteps/scratch/S0.1-NFS-feasibility`; it did not re-hash the NSP or re-extract any container. SHA-256 of `main.elf`, `sdk.elf`, `subsdk0.elf`, and `subsdk1.elf` matched the `elf_sha256` recorded in their `*-inventory.json` files (all four matched).
+
+Hopper Demo was used for manual function inspection. Ghidra was unavailable: `GHIDRA_INSTALL_DIR` was unset, no headless analyzer was configured, and no matching native decompiler was available. The documented Hopper/REA bridge first-read timeout was not retried.
+
+The function-level path was established with Apple LLVM `llvm-objdump` 21.0.0 disassembly of the verified `main.elf`, then cross-checked against Hopper decompilation for `nnMain`, `sub_768ab0`, and `sub_76e690`. Only direct `bl`/`b` edges are followed; indirect `blr` targets and function-pointer tables are not resolved. No NFS code was executed.
+
+### Startup chain (static, function-level)
+
+- `nnMain` is at `0x2d2fd0` and calls `sub_2a8120` at `0x2d30b8`.
+- `sub_2a8120` calls `sub_3d4440` at `0x2a8164`.
+- `sub_3d4440` calls `sub_3d4620` at `0x3d4500`.
+- `sub_3d4620` tail-branches to `sub_7683b0` at `0x3d4730` (`b`).
+- `sub_7683b0` calls `sub_768ab0` at `0x7684f0`.
+- `sub_768ab0` calls `sub_76e690` at `0x768c14`.
+- `sub_76e690` loads the name pointer at `0x916c3f`, whose string is `nvnDeviceGetProcAddress`, and calls the `nvnBootstrapLoader` PLT stub at `0x76e6f0` (`bl 0x7f3c00`). The import slot is `0x2087d38`.
+- The return value is moved to `x21`; at `0x76e700` `sub_76e690` calls `sub_76a220`, and at `0x76e714` it performs `blr x8` through `[0xd37000+0x3d0]`.
+- `sub_76a220` starts at `0x76a220` and has no `ret` before `0x76aaf0`. It references `nvnDeviceInitialize` at `0x76a284`, `nvnQueuePresentTexture` at `0x76a8c0`, `nvnWindowAcquireTexture` at `0x76aa9c`, and `nvnWindowSetPresentInterval` at `0x76aaf0`. These are name resolutions, not direct calls.
+
+This is static function-level reachability only. It establishes no ordering against other startup work and no runtime behavior.
+
+### Presentation
+
+- `nnMain`'s loop calls `sub_2d30e0` at `0x2d3048` and `sub_2d4ce0` at `0x2d3088`.
+- The actual `nvnQueuePresentTexture` call is not a direct call site; the name is resolved and NVN dispatch is indirect. The first present call is not established at the call-site level, and no runtime trace was captured.
+- `nvnWindowPresent` is not a string in the binary; `nvnQueuePresentTexture` is the present name that is resolved.
+- Split: resolve the indirect present target and capture a runtime first-present trace in a later slice. Do not infer the first present from the loop call sites.
+
+### Network and friends
+
+- `main` imports 7 `nn::nifm`, 22 `nn::socket`, and 17 `nn::friends` symbols, plus one `nvnBootstrapLoader`.
+- The bounded call sites are `nn::nifm::Initialize` at `0x6411b0`, `nn::nifm::SubmitNetworkRequest` at `0x6411c0`, and `nn::socket::Initialize` at `0x64121c`; all three are in `sub_63fea0`.
+- A direct caller chain exists: `sub_63fea0` ← `sub_643920` at `0x643a58` ← `sub_40c160` at `0x40c1d0` ← `sub_302040` at `0x302ae0` ← `sub_2f49e0` at `0x2f4a8c` ← `sub_2f4948` at `0x2f49b8`. `sub_2f4948` has no direct caller in the disassembly, so this is consistent with an indirect or thread entry; a direct path from `nnMain` was not found. The sites are linked and present, but startup reachability is not established, and no runtime observation was made.
+- The S0.2 bounded scan found no direct `friends` call edge; that is not proof the imports are unused.
+- The NPDM permits `friend:u`, `nifm:u`, and `bsd:u` (S0.2); permission is not a call.
+- Split: determine whether `sub_63fea0` is reached through an indirect target or a thread entry. Do not treat these call sites as startup calls.
+
+### Providers
+
+- `main` has three `DT_NEEDED` strings: `glslc.nss`, `multimedia.nss`, and `nnSdk.nss` (full NintendoSDK paths). No extracted ExeFS module has those filenames.
+- `sdk` exports 26,221 symbols and provides 456 of `main`'s 461 imports. `subsdk1` provides one (`movie::SetAllocator`). `subsdk0` provides none of `main`'s imports.
+- `sdk` exports `glslc_Alloc`, `glslc_Free`, `glslc_AllocAlign`, `multimedia_AllocAlign`, and many movie/audio symbols. `subsdk0` exports 14 `glslc*` symbols. `subsdk1` exports 894 candidate movie/media/audio symbols.
+- `main` imports zero `glslc` and zero `multimedia` symbols by name. It imports one `movie` symbol, `movie::SetAllocator`, provided by `subsdk1`.
+- Candidate mapping: `nnSdk.nss` ↔ `sdk`; `glslc.nss` ↔ `subsdk0`/`sdk`; `multimedia.nss` ↔ `subsdk1`/`sdk`. These are candidates, not identified providers. The `DT_NEEDED` filenames and symbol content do not prove identity, and the loader's name-based resolution is not established. RomFS was not inspected, so package-wide absence is not established.
+- `nnosGetDefaultUserExceptionStackForApplication` is imported by `sdk` (index 11, undefined, binding 2). It is not exported by `main`, `sdk`, `subsdk0`, `subsdk1`, or `rtld`. Its provider remains unresolved.
+- Split: inspect RomFS and package metadata for `.nss` providers, and locate the `nnosGet...` provider. Do not assume the extracted modules satisfy the `DT_NEEDED` names.
+
+### Claim separation
+
+- Linked: the imports and `DT_NEEDED` entries above.
+- Permitted: the NPDM service entries from S0.2.
+- Statically reachable: the NVN chain from `nnMain` to `nvnBootstrapLoader` and the `sub_76a220` resolver cluster. The nifm/socket sites are present but not statically reachable from `nnMain` through direct calls.
+- Runtime-observed: none; no NFS code was executed.
+- Provider status: candidate or unresolved, not a runtime resolution.
+
+### Closeout
+
+No implementation GO; no bootability or gameplay claim; no port code changed. The report now traces the first NVN bootstrap chain with function-level static evidence, and explicitly splits the first present call, `sub_63fea0` startup reachability, `.nss` provider identity/absence, and the `nnosGet...` provider.
+
+Next evidence: (a) resolve the indirect NVN present target and capture a runtime first-present trace; (b) determine the `sub_63fea0` entry path; (c) inspect RomFS and package metadata for `.nss` providers; (d) find the `nnosGet...` provider.
+
+## S0.3 source references
+
+- `.babysteps/scratch/S0.1-NFS-feasibility/elf/main-inventory.json`, `sdk-inventory.json`, `subsdk0-inventory.json`, `subsdk1-inventory.json`, `modules-summary.json` — hashes, imports/exports, `DT_NEEDED`, and symbol counts.
+- `.babysteps/scratch/S0.3-NFS-startup/hopper-nnmain-listing.txt` — Hopper decompilation of `nnMain`.
+- `.babysteps/scratch/S0.3-NFS-startup/main-disasm.txt` — full LLVM disassembly used for the direct-call graph.
+- `.operator/guides/hopper-demo.md`, “Known limits”, “Manual read path” — Hopper access path and its documented limits.
+- Addresses: `0x2d2fd0`, `0x2d30b8`, `0x2a8164`, `0x3d4500`, `0x3d4730`, `0x7684f0`, `0x768c14`, `0x76e6f0`, `0x76e700`, `0x76e714`, `0x76a220`, `0x76a284`, `0x76a8c0`, `0x76aa9c`, `0x76aaf0`, `0x6411b0`, `0x6411c0`, `0x64121c`, `0x2087d38`, `0x7f3c00`.
