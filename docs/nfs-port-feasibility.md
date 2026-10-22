@@ -200,3 +200,54 @@ Manifest identified; extraction reuse proven by identical hashes; nothing built 
 - `games/totk/scripts/extract_exefs.py:160-178`; `games/totk/scripts/extract_romfs.py:main`; `games/by3/scripts/extract_romfs.py:main`.
 - `build_app.py:48-70,307-336,340-357,499-566`; `games/totk/assets/expected-v1.4.3.json`; `games/botw/assets/expected-v1.6.0.json`; `games/by3/assets/expected-v1.2.0.json`.
 - `.babysteps/scratch/S0.2-NFS-feasibility/work/src/hactool/hactool` — pinned hactool used for the meta NCA header and section dump.
+
+## S1.2 — Verified ARM64 module rewrites
+
+Read-only evidence pass. No port runtime code, loader, or manifest file was added or changed; no game code was executed; no bootability or gameplay claim. Scratch: `.babysteps/scratch/S1.2-NFS-rewrite/`.
+
+### Carriers, including `subsdk1`
+
+- `prepare_modules.py` was copied into scratch and its module list changed to `['rtld', 'main', 'sdk', 'subsdk0', 'subsdk1']` (`:222`). That one line is the whole difference from `games/by3/scripts/prepare_modules.py`, which is unchanged in the tree.
+- `prepare_modules.py` and `patch_nso.py` both need Python `lz4`; the rewriter also needs `capstone`; the system interpreter (3.15) has neither. Work ran in a scratch venv and no dependency entered the repository: `uv venv --python 3.12 <scratch>/venv && uv pip install --python <scratch>/venv/bin/python capstone lz4` (capstone 5.0.9, lz4 4.4.5).
+- All five carriers were built and each reports `segment_hashes_verified: true`. NSO build IDs: rtld `c1ed34fd…`, main `3515e683…`, sdk `d9add76f…`, subsdk0 `ebedb264…`, subsdk1 `84e50460…`. None equals the registered D2R build ID `db0507f36b84200ac05f75d76ed5026f`.
+
+### Five modules, five recorded hashes
+
+Command per module, with the same environment pair `step_code` uses (`build_app.py:540-541`):
+
+`DM_RULESET=native DM_PRIVATE_GATES=0 <scratch>/venv/bin/python games/by3/third_party/d2r/patch_nso.py <exefs>/<module> rewritten <module>`
+
+| module | NSO bytes | NSO SHA-256 | rewrite points | gates | `.patched.bin` bytes | rewritten SHA-256 |
+| --- | --- | --- | --- | --- | --- | --- |
+| rtld | 7,223 | `e1b018d97186c07e69d1203326183dddcd575af8fe192433b848c30ca650eb82` | 4 | 4 | 65,696 | `1b269a41782151ab7d69703baa1f227b6018b126b63890d0b5103a6744a9354d` |
+| main | 6,906,316 | `721afa1df58eefe388b0630267f9f7ae09d29a95c54136ff770fd6981a76ae5e` | 7,506 | 0 | 34,447,824 | `02a24b38914bf6b9e0102b38a61b7f63a07d93bf1032c272d4e4f943aa5bf260` |
+| sdk | 5,619,621 | `c54bf6080c82b1946574714e7bac2a1d2b15cc7e1198785bde0b95b393ead722` | 11,812 | 94 | 14,256,876 | `a42b758bc5f2160aefd685339fe110660dd18acb3bbc9feae79162bcc00c27d5` |
+| subsdk0 | 4,501,008 | `6afb3c974222876eae903a645b1da2abcd896c4fd5ff77e26cb2d6f6e77eb185` | 2,963 | 0 | 10,417,284 | `386e15370672cfe7b5b640250308ebad28f6218435fe5934e7cfca5ee5a3bf4c` |
+| subsdk1 | 3,397,429 | `efc5c92a4b55ff050d040f1236f02663ccfdfab14a80e59f312c38e23449860f` | 10,203 | 0 | 8,282,384 | `3dbc80c43067e693d1eac16ef7ae797d927d1d8dcf1d69a1a10d9ed40f7b4260` |
+
+- Registered D2R cuts and observation gates applied to none of them: `cuts 0`, `obs 0` on every module, because both tables are keyed by the D2R build ID. The rewrites are the generic x18 / thread-pointer / SVC / counter substitutions only.
+- Every module exited 0, and every rewrite is reproducible: a second run into `rewritten-verify/` is byte-identical for all five (`logs/verify_*.log`).
+- Rewriter digest: `patch_nso.py` `f2ac79896e7f7d1f3575910e64233e23375da03bbcf40e19acfa747277980be3`.
+
+### Independent structural check
+
+`games/by3/third_party/d2r/structck.py rewritten <module> <exefs>/<module>` with `LLVM_BIN=/opt/homebrew/opt/llvm@22/bin` — `llvm@23`, the path the check defaults to, is not installed here. All five end `STRUCT <module> OK … 失败项=0`:
+
+- `STATIC` recounts with llvm-objdump report `violations=0` on all five, and changed text words equal the rewrite heads on all five.
+- sdk's gate and system-register counts here (94 gates; 60 `tpidrro`, 33 `cntpct`, 5 `tpidr`) match the S0.3 raw-scan counts, recounted independently of the rewriter's own capstone pass.
+
+### The S1.1 meta artifact holds no CNMT
+
+The version question is not answerable from what S1.1 kept: `meta/cnmt.nca` is 3,584 bytes with no `NCA0` at `0x200`, and the 304-byte payload in `meta/pfs0/Application_010029b0118e8000.cnmt` occurs nowhere inside those 3,584 bytes (`nca.find(payload) == -1`). Re-locating the meta NCA in the package and re-extracting section 0 comes before any CNMT field can be read.
+
+### Closeout
+
+Closes-when met: each module rewrote with a recorded source and output SHA-256, an independent structural check passed, the baseline is green, and no port runtime code changed. Nothing was executed. Splits carried: (a) re-extract and decode the CNMT for `version`/`display_version`; (b) title-parameterized RomFS extraction for `romfs{size,sha256}`; (c) the six-font `shared_fonts_sha256` input; (d) the `subsdk1` runtime load set; (e) the rewrite has no registered cuts, so nothing here decides the memory-budget or offline-window behaviour those D2R cuts carry.
+
+## S1.2 source references
+
+- `.babysteps/scratch/S1.2-NFS-rewrite/rewrite-results.json` — per-module source and output hashes, sizes, site/gate/cut counts, `structck` lines, rewriter digest.
+- `.babysteps/scratch/S1.2-NFS-rewrite/{elf,rewritten,rewritten-verify,logs}/` — carriers, rewrites, reproducibility run, `rewrite_<module>.log`, `verify_<module>.log`, `structck_<module>.log`, `gate.log`.
+- `.babysteps/scratch/S1.2-NFS-rewrite/prepare_modules_scratch.py` — the one-line-different copy; `diff` against `games/by3/scripts/prepare_modules.py` is `:222` only.
+- `.babysteps/scratch/S1.1-NFS-manifest/meta/` — the artifacts the CNMT note above measured.
+- `games/by3/third_party/d2r/patch_nso.py:30,171-183,1068-1119`; `games/by3/third_party/d2r/structck.py:1-60`; `games/by3/scripts/prepare_modules.py:25-212,215-230`; `build_app.py:540-541`.

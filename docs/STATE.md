@@ -4,19 +4,19 @@
 
 On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
 
-**The next action** is S1.2 — Produce a verified ARM64 rewrite of the NFS modules. Run the analysis-carrier conversion (`games/by3/scripts/prepare_modules.py`, whose default list omits `subsdk1`) and then the rewriter (`third_party/d2r/patch_nso.py`, `DM_RULESET=native`) over `rtld`, `main`, `sdk`, `subsdk0`, `subsdk1` in scratch, and record per-module NSO and rewritten SHA-256 values. This is a rewrite and static-verification step only: no loader, no module loading, no runtime code, no bootability claim. Carry the S1.1 splits: the CNMT version is still unread, and `subsdk1` is outside the current rewrite set.
+**The next action** is S1.3a — Re-extract and decode the NFS CNMT. The S1.2 rewrite set is complete for all five modules, but the version integer is still unread, and the artifacts S1.1 kept cannot answer it: `meta/cnmt.nca` is 3,584 bytes with no `NCA0` at `0x200`, and the 304-byte payload in `meta/pfs0/` occurs nowhere inside those bytes. Locate the meta NCA in the package, re-extract its section 0 with the correct offset and size, decompress it if the NCA header flags compression, and read `version` and `display_version` from the CNMT header bytes. Record the container offset, section offset/size, and the bytes that carry each field. Evidence only: no `expected-*.json`, no RomFS extraction, no loader, no bootability claim. Carry the S1.2 splits: RomFS extraction, the six-font `shared_fonts_sha256` input, and the `subsdk1` runtime load set.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
-The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified active model was `opencode/gpt-6-luna#high`, with 1,050,000 context and a 20,000-token compaction buffer; re-verify the live session model and catalog for every slice. At slice start, capture the session ID/model and cumulative usage/cost; at closeout, report actual ledger usage and USD cost, with the slice delta separate from cumulative totals. Forecasts are informational, not the spend record.
+The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified active model for S1.2 was `opencode-go/deepseek-v4.1-flash`, with 1,000,000 context and 384,000 output; re-verify the live session model and catalog for every slice. At slice start, capture the session ID/model and cumulative usage/cost; at closeout, report actual ledger usage and USD cost, with the slice delta separate from cumulative totals. Forecasts are informational, not the spend record.
 
 ## Next action
 
-S1.2 — Produce a verified ARM64 rewrite of the NFS modules. Convert all five extracted NSOs to analysis carriers with `games/by3/scripts/prepare_modules.py`, adding `subsdk1` to its default module list in the scratch copy only, then run `third_party/d2r/patch_nso.py` with `DM_RULESET=native` over `rtld`, `main`, `sdk`, `subsdk0`, `subsdk1`. Record each module's NSO SHA-256 and rewritten SHA-256. Do not implement or load a loader, do not run any game code, and make no bootability or gameplay claim.
+S1.3a — Re-extract and decode the NFS CNMT. Find the meta NCA in the package, re-extract its section 0 at the right offset and size (decompressing when the NCA header says the section is compressed), and read `version` (integer) and `display_version` from the CNMT header. Do not infer either value from SDK strings, title IDs, or the ExeFS. Record the container offset, the section offset/size, and the exact bytes carrying each field. Write nothing outside scratch: no `expected-*.json`, no RomFS extraction, no loader, no game code, no bootability claim.
 
-Gate: `python -m unittest discover -s tests` passes; the rewrite step records a per-module result (rewritten or a precise refusal naming the reason and rule), with source and output hashes. No port runtime code changes.
+Gate: `python -m unittest discover -s tests` passes; `version` and `display_version` are read from CNMT bytes, with offset and field evidence recorded; no port runtime code changes.
 
-Close when every module either rewrites with recorded hashes or has a precise blocker and split; the configured baseline passes; and no port runtime code is changed. Make no bootability or gameplay claim.
+Close when both values are read from the container with recorded bytes and offsets, or a precise blocker names the reason and a split; the configured baseline passes; and no port runtime code is changed. Make no bootability or gameplay claim.
 
 **The Do-Not list is `docs/donot.md`** — 2 entries, append-only. Never dropped, never trimmed.
 
@@ -39,8 +39,8 @@ The roadmap below contains approved candidate work units. S1.2 is promoted as th
 
 ### S1 — Game-specific build and runtime bootstrap (approved)
 
-- S1.2 — Produce a verified ARM64 rewrite. **NEXT**
-- S1.2 — Produce a verified ARM64 rewrite.
+- S1.2 — Produce a verified ARM64 rewrite. **DONE**
+- S1.3a — Re-extract and decode the CNMT version. **NEXT**
 - S1.3 — Boot the loader through `nnMain`.
 
 ### S2 — Graphics and first frame (approved)
@@ -96,3 +96,13 @@ The roadmap below contains approved candidate work units. S1.2 is promoted as th
 - `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped, known non-fatal subprocess `ResourceWarning`. Log: `.babysteps/scratch/S1.1-NFS-manifest/gate.log`.
 - Boundary: scope was the working-tree diff against HEAD. No linkage finding; two documentary path references in the report (`docs/nfs-port-feasibility.md:165,167`) and no build/runtime reach into `games/totk` or `games/by3`.
 - Do-Not #2 added (whole-package SHA-256 over the multi-GB NSP). S1.2 is promoted as the next task; the CNMT version decode, the three-or-four module rewrites, RomFS extraction, the six-font input, and the `subsdk1` load-set question remain split.
+
+### S1.2 — Verified ARM64 module rewrites (2026-10-22)
+
+- Report: `docs/nfs-port-feasibility.md` S1.2. All five modules rewrote from the S1.1 ExeFS: rtld 4 rewrite points / 4 gates, main 7,506 / 0, sdk 11,812 / 94, subsdk0 2,963 / 0, subsdk1 10,203 / 0. Per-module NSO and `.patched.bin` SHA-256 are in the report's table and in `.babysteps/scratch/S1.2-NFS-rewrite/rewrite-results.json`.
+- `cuts 0`, `obs 0` on every module: the registered D2R cuts and observation gates are keyed by build ID `db0507f36b84200ac05f75d76ed5026f` and none of the five NFS modules carries it. Each rewrite is the generic x18 / thread-pointer / SVC / counter substitution only.
+- Independently checked, not just produced: `games/by3/third_party/d2r/structck.py` ends `STRUCT <module> OK … 失败项=0` for all five, with llvm-objdump as the denominator and `text改动字` equal to `改写点` on each. It ran with `LLVM_BIN=/opt/homebrew/opt/llvm@22/bin` because `llvm@23`, the path the check defaults to, is not installed. A second rewrite run into `rewritten-verify/` is byte-identical for all five.
+- Scratch only: a Python 3.12 venv with capstone 5.0.9 and lz4 4.4.5 under `.babysteps/scratch/S1.2-NFS-rewrite/`. `games/by3/scripts/prepare_modules.py` is unchanged; the scratch copy differs at `:222` (module list) and nowhere else.
+- `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`. Log: `.babysteps/scratch/S1.2-NFS-rewrite/gate.log`.
+- Boundary: scope was the working-tree diff against HEAD (documentation-only). Linkage: no code, script, or build file changed, so no new runtime or build-time linkage into `games/totk` or `games/by3`; the report's predecessor references are citations. Paths: the report cites `games/by3/...` source paths as evidence and names the scratch copies, with no output written into either boundary tree.
+- No new paid-for fault; the Do-Not count remains 2. No bootability or gameplay claim; no port runtime code changed; no game code executed. S1.2 splits: the CNMT decode (promoted to S1.3a), title-parameterized RomFS extraction, the six-font `shared_fonts_sha256` input, the `subsdk1` runtime load set, and the fact that no D2R cut applies to these modules.
