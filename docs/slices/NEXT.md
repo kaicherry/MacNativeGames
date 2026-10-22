@@ -1,33 +1,35 @@
 ---
-slice: S1.3
+slice: S2.1
 stateFile: docs/STATE.md
-donotCount: 3
-seededFrom: 54f0289512b29cb3b1db033095eda884c9e3bf2e
+donotCount: 4
+seededFrom: 8e05a5e
 ---
 
-# Next slice — S1.3: boot the loader through nnMain
+# Next slice — S2.1: map the required NVN surface
 
 ## The next action — verbatim
 
-S1.3 — Boot the loader through `nnMain`. Build the `games/nfs/` tree and wire the third title so NFS rebuilds from its original files like the other games: `build_app.py` `GAME`/`VERSIONS`/`TITLES`/`APPS` (`:48-70`) entries for title `010029B0118E8000` v0 consuming `games/nfs/assets/expected-v1.0.0.json`, the way the TOTK/BOTW steps consume theirs. The runtime load set maps all six ExeFS modules including `subsdk1` (`main` imports `movie::SetAllocator` from it), and the five recorded rewrite images. Resolve the boot-blocking providers first, or split them with evidence: the `DT_NEEDED` names `glslc.nss`, `multimedia.nss`, `nnSdk.nss`, and `nnosGetDefaultUserExceptionStackForApplication` (imported by `sdk`, provider unknown). Boot through `nnMain` and record exactly what is observed — module mapping, relocations, the S0.3 `nvnBootstrapLoader` chain — and what is not. Adapt or copy predecessor code into `games/nfs/`; no runtime/build-time path dependency on `games/totk/` or `games/by3/` may survive. Preflight the unit against the 350,000 work-unit ceiling and split further before work if it does not fit.
+S2.1 — Map the required NVN surface. First business is the two window-path blockers the S1.3 boot left, each to be cleared with evidence or split: headless the boot stops at `FAIL: VI requires native macOS window` (the VI service requires the native window), windowed it stops in the frontend at `FAIL: native display link initialization` before the guest starts (`CVDisplayLinkCreateWithActiveCGDisplays` returns -6661 in a standalone probe in the same session; deprecated since macOS 15.0; environmental vs API breakage is not established). Then map the NVN surface the S0.3 `nvnBootstrapLoader` chain reaches and observe that chain at runtime: its endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` was not reached in S1.3 (both runs stopped first), and the HLE takeover (`hle_nvn.c` `HLE_FORCE`) is instrumented to log its argument when it is called. Build on the settled S1.3 base — the six-entry load set, 141,377 relocations with zero unresolved strong imports, DT_INITs and `ENTER nnMain` observed — and carry the remaining splits: the indirect first-present target and the runtime trace (S2.1), the `sub_63fea0` entry path (S3.2).
+
+Gate: `python -m unittest discover -s tests` passes; every NVN surface mapping is tied to a recorded observation (the boot log or the S0.3 chain evidence) and no claim extends past it.
+
+Close when the required NVN surface is mapped with each mapping tied to evidence, the two window-path blockers are resolved or split with evidence, the S0.3 chain's runtime reach is recorded as far as it goes and where it stops, the configured baseline passes, and no claim is made beyond what was observed. Make no gameplay claim.
 
 ## What is settled — do not re-derive
 
-- `games/nfs/assets/expected-v1.0.0.json` exists (commit `54f0289`), all seven keys verified 16/16 against the S1.1–S1.3b recorded evidence. The manifest file is the authority for every value; do not re-measure and do not re-derive its contents.
-- `exefs_sha256` holds six files: `main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`, `subsdk1`. `rewritten_sha256` holds five: `main`, `rtld`, `sdk`, `subsdk0`, `subsdk1` as `<module>.patched.bin` — deliberately more than the three TOTK/BOTW manifests hold (those builds rewrite three; consumers index by module name, `build_app.py:536,1413`).
-- Font pin policy is decided: the manifest pins the **reference dump**, identical to `shared_fonts_sha256` in every TOTK/BOTW manifest. `font_report` (`build_app.py:414`) says the pins identify the reference dump and a valid BFTTF from another firmware version is bound by the SHA-256 of its actual bytes, so this machine's two differing zh-cn fonts bind through that fallback at build time. This machine's measured values, recorded in S1.3b and kept there: `chinese-simplified` `a04eb490283d8393b2c49c52e315132461d790ac73996cb43ac869ce72003938`, `chinese-simplified-extension` `f5784e7a553fef9a05b3b7dba94e77e79162ace9db8dafc715ace0be1fd9b9ff`. Do not "fix" the pins to those values.
-- `newFileRegistration` is identified: the game-specific build manifest for NFS source files is the per-version manifest `games/nfs/assets/expected-v1.0.0.json` itself (every build step checks its inputs against it — `build_app.py:15`, `games/by3/scripts/prepare_runtime.py:7`). Its build-side load (`build_app.py:52-56,64,67`) is S1.3's registration to perform.
-- Identity facts: `title_id` `010029B0118E8000`, CNMT `version` `0`, `display_version` `1.0.0`, Program NCA `a040a32c4a4389eb6ad4baeecb97740c.nca` (offset 736, 7,387,971,584 bytes). The five NSO build IDs (S1.2) are rtld `c1ed34fd…`, main `3515e683…`, sdk `d9add76f…`, subsdk0 `ebedb264…`, subsdk1 `84e50460…`; none equals the registered D2R build ID, so every rewrite is generic x18 / thread-pointer / SVC / counter substitution (`cuts 0`, `obs 0`).
-- Static boot chain already established (S0.3): `nnMain` `0x2d2fd0` → `sub_2a8120` → `sub_3d4440` → `sub_3d4620` → `sub_7683b0` → `sub_768ab0` → `sub_76e690` → `nvnBootstrapLoader("nvnDeviceGetProcAddress")` at `0x76e6f0`; `sub_76a220` resolves `nvnDeviceInitialize`, `nvnQueuePresentTexture`, `nvnWindowAcquireTexture`, `nvnWindowSetPresentInterval`. Static reachability only — no runtime behavior was observed.
-- The rewrite tools run with `DM_RULESET=native DM_PRIVATE_GATES=0` (`build_app.py:540-541`); `prepare_modules.py`'s module list must include `subsdk1`; Python `lz4` and `capstone` are needed (S1.2 used a scratch venv; no dependency entered the repository).
+- `games/nfs/` exists and is wired through `build_app.py` as the third title (`VERSIONS['nfs100']`, `TITLES`, `APPS`, `step_code_nfs`/`step_data_nfs`); the build rebuilds NFS from `game.nsp` with every `expected-v1.0.0.json` check passing (~5 min). Full record: `docs/nfs-port-feasibility.md` "S1.3 — The games/nfs tree and the boot through nnMain".
+- The load set is the whole ExeFS: five digest-bound rewrite images (`rtld`, `main`, `sdk`, `subsdk0`, `subsdk1`) plus `main.npdm` as process metadata. 141,377 relocations; zero unresolved strong imports. rtld's text is never executed (W^X shared host page) and its DT_INIT is skipped — by policy, see `.operator/specs/nfs-port.md`.
+- The boot reaches `nnMain` at `main+0x2d2fd0` (S0.3's static address) and runs SDK startup, all runnable DT_INITs, guest threads, and `nv::InitializeGraphics` served by the HLE (Metal device observed).
+- The two window-path blockers and their evidence: headless `FAIL: VI requires native macOS window`; windowed `FAIL: native display link initialization` (standalone `CVDisplayLinkCreateWithActiveCGDisplays` probe returns -6661 in this session).
+- Providers are settled at symbol level: no `.nss` in ExeFS (six entries) or the decrypted RomFS (19,169 paths); `glslc_*`/`multimedia_*` → `sdk`, `movie::SetAllocator` → `subsdk1`; `nnosGetDefaultUserExceptionStackForApplication` is weak (binding 2), binds zero, not boot-blocking. The DT_NEEDED **filename** identity is not claimed and must not be asserted.
+- The five NSO build IDs match none of the registered D2R builds, so all rewrites are generic (`cuts 0`, `obs 0`); rewriter runs with `DM_RULESET=native DM_PRIVATE_GATES=0`.
 - Configured baseline last passed: 255 tests, 1 skipped, non-fatal subprocess `ResourceWarning`, exit 0.
-- No NFS implementation exists. No bootability or gameplay claim has been made.
+- No gameplay claim exists. No present, frame, audio, or gameplay has been observed.
 
 ## Withdrawn — proven wrong, do not use
 
-- "The six shared-font inputs come from the game package." They cannot: zero font files among the 19,169 RomFS paths and no font content in the five NCAs. They are firmware-dump inputs (titles `0100000000000810`–`0814`).
-- "The CNMT version integer is unknown." It is `0` (CNMT `+0x08`, container 7,388,514,656).
-- `display_version` as a CNMT field: it is a NACP field (`control.nacp` `+0x3060`), value `1.0.0`.
+- "The six shared-font inputs come from the game package." Zero font files among the 19,169 RomFS paths; they are firmware-dump inputs (Do-Not #3 applies to absence claims).
+- "The CNMT version integer is unknown." It is `0`; `display_version` `1.0.0` is a NACP field (`+0x3060`), not a CNMT field.
 - A whole-package SHA-256 of `game.nsp` (Do-Not #2). Identity stays per-file.
 - "No `NCA0` at `0x200` means the artifact is wrong." Pre-decryption bytes (Do-Not #3).
 
@@ -35,37 +37,33 @@ S1.3 — Boot the loader through `nnMain`. Build the `games/nfs/` tree and wire 
 
 | Work | Touch |
 | --- | --- |
-| NFS tree | New `games/nfs/` tree (runtime, graphics layer, scripts) — copy/adapt the predecessor's; adapting is fine, a surviving path dependency is not. |
-| Build wiring | `build_app.py:48-70` — `GAME`/`VERSIONS`/`TITLES`/`APPS` entries for `010029B0118E8000` v0 → `games/nfs/assets/expected-v1.0.0.json`; `step_code`/`step_data` must check the manifest's keys as they do for TOTK/BOTW. |
-| Loader | The module load set: all six ExeFS modules with `subsdk1` included, binding the five recorded `rewritten_sha256` images. |
-| Providers | `DT_NEEDED` `glslc.nss`, `multimedia.nss`, `nnSdk.nss`; `nnosGetDefaultUserExceptionStackForApplication` (imported by `sdk`). Resolve or split with evidence — the S0.3 candidate mapping is a candidate only. |
+| Window path | `games/nfs/runtime/frontend.m` (display-link init), the VI window requirement (`runtime/services.c` / applet host) — resolve each with evidence or split it |
+| NVN surface | `games/nfs/third_party/d2r_gfx/` (`nvn_*`), driven by the S0.3 chain and the device inventory (523 names / 424 implemented / 99 red stubs, logged at boot) |
+| Chain observation | `hle_nvn.c` `HLE_FORCE("nvnBootstrapLoader")` already logs its argument; the S0.3 chain endpoint is what to catch |
 
 ## Read these first, and only these
 
-- `docs/nfs-port-feasibility.md` — "S0.3 — Function-level startup and provider evidence", sections "Startup chain (static, function-level)" and "Providers".
-- `docs/nfs-port-feasibility.md` — "S1.2 — Verified ARM64 module rewrites", section "Five modules, five recorded hashes".
+- `docs/nfs-port-feasibility.md` — "S1.3 — The games/nfs tree and the boot through nnMain": sections "Boot observation", "Not observed", "The rtld W^X finding".
+- `docs/nfs-port-feasibility.md` — "S0.3 — Function-level startup and provider evidence", section "Startup chain (static, function-level)" — quote the numbers: `nnMain 0x2d2fd0`; call sites `0x2d30b8`, `0x2a8164`, `0x3d4500`, `0x3d4730` (`b`), `0x7684f0`, `0x768c14`; PLT stub `0x76e6f0` (`bl 0x7f3c00`); `sub_76e690` `blr x8` at `0x76e714` through `[0xd37000+0x3d0]`; `sub_76a220` name resolutions `0x76a284` `nvnDeviceInitialize`, `0x76a8c0` `nvnQueuePresentTexture`, `0x76aa9c` `nvnWindowAcquireTexture`, `0x76aaf0` `nvnWindowSetPresentInterval`.
+- `docs/nfs-port-feasibility.md` — "S1.3" section "Provider evidence" and its claim boundary.
 - `CONTRIBUTING.md` — "How the port works, and what it must not become" and "Repository layout".
-- `docs/how-it-works.md` — "The code".
 
 ## Carried evidence splits — owners
 
-- `.nss` provider identity/absence and `nnosGetDefaultUserExceptionStackForApplication` provider → S1.3 (the slice itself).
-- `subsdk1` in the runtime load set → S1.3 (the slice itself).
-- Indirect first-present target and runtime trace → S2.1.
-- `sub_63fea0` indirect/thread entry → S1.3/S3.2.
+- S0.3 `nvnBootstrapLoader` chain endpoint, runtime trace, indirect first-present target → S2.1 (this slice).
+- `sub_63fea0` indirect/thread entry → S3.2.
 
 ## Do-Not entries that apply here
 
-- #1 — build the fixture's `.venv/bin/python` from `sys.executable`; never symlink to `sys.prefix`.
-- #2 — do not hash the whole multi-GB NSP; identity stays per-file.
-- #3 — do not conclude a structure is absent from raw container bytes; decrypt the layer first.
+- #2 — size every long evidence run explicitly (the S1.3 display-link probe pattern).
+- #3 — do not conclude absence from bytes that are not the decoded layer.
+- #4 — do not blanket-rename a forked tree's comments; keep the predecessor as attribution until re-observed.
 
 ## The gate
 
 - `python -m unittest discover -s tests` (configured baseline).
-- The build's own manifest checks (`exefs_matches`, `rewritten_sha256`, `step_data` RomFS/fonts) accept `games/nfs/assets/expected-v1.0.0.json` against real inputs.
-- Evidence gate: every claim is backed by a recorded observation and none extends past it.
+- Every NVN surface mapping tied to a recorded observation; none extends past it.
 
 ## When this slice closes
 
-Close when a `games/nfs/` tree wired through `build_app.py` rebuilds NFS from its original files with every manifest check passing, the loader maps all six modules (including `subsdk1`) and boots through `nnMain` with the observation recorded, the `.nss`/`nnosGet…` provider questions are resolved or split with evidence, the configured baseline passes, and no claim is made beyond what was observed. Make no gameplay claim.
+Close when the required NVN surface is mapped with each mapping tied to evidence, the two window-path blockers are resolved or split with evidence, the S0.3 chain's runtime reach is recorded as far as it goes and where it stops, the configured baseline passes, and no claim is made beyond what was observed. Make no gameplay claim.
