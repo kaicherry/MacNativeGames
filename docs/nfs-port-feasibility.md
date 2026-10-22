@@ -398,8 +398,9 @@ Windowed run (log kept): the frontend created a window drawable 2628x1478 (scale
 
 ### Not observed
 
-- The S0.3 chain endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` — both runs stopped before it. The HLE takeover exists (`hle_nvn.c` `HLE_FORCE("nvnBootstrapLoader", …)`) and is instrumented to log its argument when called.
+- The S0.3 chain endpoint `nvnBootstrapLoader("nvnDeviceGetProcAddress")` — observed in S2.2: the HLE logs the call, resolves 523 names, answers 98 properties (0x00–0x61), runs the first GPU frame, then stops at `hid` IPC service.
 - rtld's DT_INIT not run (W^X above). No present, no frame, no audio, no gameplay.
+- S2.2 extended observation: first GPU frame (27 functions, 32 calls including `QueuePresentTexture`), then `FAIL: IPC service not implemented` for `"hid"` — the game halts after detecting as a local macOS process and initializing account/controller, but the `hid` service is unimplemented. The runtime already has GameController framework wiring in the HID layer; S2.2b implements `hid` for controller input.
 
 ### Provider evidence
 
@@ -419,7 +420,7 @@ Claim boundary: the DT_NEEDED filename strings are NOT proven to identify partic
 
 ### Closeout
 
-Closes-when met: the `games/nfs/` tree wired through `build_app.py` rebuilds NFS from its original files with every manifest check passing, the loader maps/loads all six ExeFS entries (five rewrite images plus `main.npdm`) and boots through `nnMain` with the observation recorded, the provider questions are resolved at symbol level (the filename-identity question explicitly not claimed), the configured baseline passes, and no gameplay claim is made. Splits carried: (a) the S0.3 `nvnBootstrapLoader` chain endpoint and the runtime trace → S2.1; (b) the two window-path blockers (`FAIL: VI requires native macOS window` headless; `FAIL: native display link initialization` windowed) → S2.1 first business; (c) the `sub_63fea0` indirect/thread entry path → S3.2.
+Closes-when met: the `games/nfs/` tree wired through `build_app.py` rebuilds NFS from its original files with every manifest check passing, the loader maps/loads all six ExeFS entries (five rewrite images plus `main.npdm`) and boots through `nnMain` with the observation recorded, the provider questions are resolved at symbol level (the filename-identity question explicitly not claimed), the configured baseline passes, and no gameplay claim is made. Splits carried: (a) the S0.3 `nvnBootstrapLoader` chain endpoint and the runtime trace → S2.1; (b) the two window-path blockers (`FAIL: VI requires native macOS window` headless; `FAIL: native display link initialization` windowed) → S2.1 first business; (c) the `sub_63fea0` indirect/thread entry path → S3.2; (d) the `hid` IPC service stub → S2.2b.
 
 ## S1.3 source references
 

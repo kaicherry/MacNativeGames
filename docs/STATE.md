@@ -4,7 +4,7 @@
 
 On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
 
-**The next action** is S2.2 — Resolve NVN device property 0x60 and continue the device init chain: both S2.1 boots cleared the window-path blockers and proceeded through 516 NVN function name resolutions before stopping at `unsupported NVN device property 0x60` (log line 676/687). Determine whether 0x60 is required or optional, implement or classify it, and continue tracing the init chain to find the next blocker. The indirect first-present target and runtime trace (S2.1 resolved) and the `sub_63fea0` entry path (S3.2) remain carried.
+**The next action** is S2.2b — Implement the `hid` IPC service (controller input). S2.2's 0x60/0x61 are classified (return 0) and the init chain proceeds: NVN device init completes, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC. The indirect first-present target and runtime trace (S2.1 resolved) and the `sub_63fea0` entry path (S3.2) remain carried.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
@@ -12,21 +12,21 @@ The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified a
 
 ## Next action
 
-S2.2 — Resolve NVN device property 0x60 and continue the device init chain. Both S2.1 boots cleared the window-path blockers (headless: offscreen `CAMetalLayer` in `vi_initialize()`; windowed: three-tier CVDisplayLink fallback chain) and proceeded through 516 NVN function name resolutions before both stopping at `unsupported NVN device property 0x60` at log line 676 (headless) / 687 (windowed). The device property range queried was 0x43–0x5f (with 0x5d gap observed). Determine whether 0x60 is required or optional, implement or classify it, and continue tracing to find the next blocker.
+S2.2b — Implement the `hid` IPC service (controller input). S2.2 classified 0x60 (NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID) and 0x61 (NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS) as debug/feature flags returning 0. The init chain now proceeds past NVN device init, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC.
 
 Gate: `python -m unittest discover -s tests` passes; every device init claim is tied to a recorded observation; no gameplay claim.
 
-Close when the 0x60 property is resolved or classified with evidence, the device init chain is traced to the next stop point, the S2.1 findings (516 resolved names, both blockers resolved, stop at 0x60) are incorporated, the configured baseline passes, and no claim extends past what was observed. Make no gameplay claim.
+Close when the `hid` service is implemented (controller input end-to-end), the init chain is traced to the next stop point, S2.2's findings (0x60/0x61 classified, first GPU frame runs) are incorporated, the configured baseline passes, and no claim extends past what was observed. Make no gameplay claim.
 
 **The Do-Not list is `docs/donot.md`** — 4 entries, append-only. Never dropped, never trimmed.
 
 ## Completed
 
-S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, stop at device property 0x60.
+S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, device properties 0x00–0x5f answered. S2.2 is complete: properties 0x60/0x61 classified, first GPU frame runs, stop at IPC service `hid`.
 
 ## In progress
 
-No NFS port task is in progress.
+S2.2b — Implement the `hid` IPC service (controller input).
 
 ## Queued
 
@@ -48,7 +48,8 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 ### S2 — Graphics and first frame (approved)
 
 - S2.1 — Map the required NVN surface. **DONE**
-- S2.2 — Implement missing graphics calls through the first frame.
+- S2.2 — Resolve NVN device properties 0x60/0x61 and continue the device init chain to the first frame. **DONE**
+- S2.2b — Implement the `hid` IPC service (controller input). **IN PROGRESS**
 - S2.3 — Verify shader and visual correctness.
 
 ### S3 — Services and playable race (approved)
@@ -159,3 +160,13 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 - **Scratch evidence.** `.babysteps/scratch/S2.1-NFS-nvn-surface/`: `surface-map.json` (the claim/evidence record), `boot-headless.log`, `boot-windowed.log`, `dlprobe.m`/`dlprobe`/`dlprobe.out`. The mapped table (chain entry → how reached → runtime status → HLE status) is in `docs/nfs-port-feasibility.md` S2.1; `0x60` is `NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID` (`nvn.h:328`) and the HLE constant table carries measured values only to `0x5F`.
 - `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped. Boundary (scope: working tree vs HEAD — `frontend.m`, `hle_nvn.c`): linkage clear (new calls are system frameworks the Makefile already links; helpers resolve in-tree), paths clear (the diff names no predecessor tree).
 - **No gameplay claim.** No present, frame, or gameplay reached; the three present-side names were resolved but never called. New paid-for fault added: Do-Not #5 (one `runtime_fail` must not cover several calls). S2.2 promoted: resolve NVN device property 0x60 and continue the device init chain.
+
+### S2.2 — Resolve NVN device properties 0x60/0x61 and continue the device init chain (2026-10-22)
+
+- **0x60 and 0x61 classified and answered.** `g_devinfo` extended with `[0x60] = 0` (NVN_DEVICE_INFO_DEBUG_GROUPS_MAX_DOMAIN_ID — debug-only query, HLE does not implement debug groups) and `[0x61] = 0` (NVN_DEVICE_INFO_EVENTS_SUPPORT_REDUCTION_OPERATIONS — feature flag, HLE events do not implement reduction). Both return 0 so the game falls back to non-debug/non-reduced behavior. The bounds check uses `NVN_DEVINFO_COUNT` (const expression) instead of repeated division.
+- **Init chain proceeds past NVN device setup.** Both boots now pass `nvnDeviceGetInteger` fully (98 properties answered, 0x00–0x61), `nvnDeviceSetDepthMode` and `nvnDeviceSetWindowOriginMode` called, window and queue initialized, first GPU frame runs (27 functions, 32 calls including `QueuePresentTexture`).
+- **New stop point: IPC service not implemented.** The game halts at `FAIL: IPC service not implemented` after the `hid` (input/hid) service is queried by the SDK. Boot log: `application environment: local macOS process`, `persistent local account initialized`, `native keyboard controller initialized`, then `hid` → `FAIL`. This is a controller input gap — macOS GameController framework is wired in the runtime's HID layer. S2.2b implements `hid` for controller input.
+- **Code changed, committed `dc67530`** with the feasibility report: `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c` (`g_devinfo` extended to 0x61, `NVN_DEVINFO_COUNT` const).
+- **Scratch evidence.** Boot log: `.babysteps/scratch/S2.2-NFS-ipc/logs/boot.log` (headless, 98 lines — NVN init complete, first frame, then `hid` fail).
+- `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped. Boundary (scope: `games/nfs/` only): linkage clear (only `hle_nvn.c` changed, no calls into `games/totk/` or `games/by3/`), paths clear (self-contained HLE data change).
+- **No gameplay claim.** S2.2b promoted: resolve the `hid` IPC service blocker after the first GPU frame.
