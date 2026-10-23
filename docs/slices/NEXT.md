@@ -1,35 +1,39 @@
 ---
-slice: S2.5
+slice: S2.6
 stateFile: docs/STATE.md
-donotCount: 5
-seededFrom: d79115f
+donotCount: 6
+seededFrom: 3b11ef8
 ---
 
-# Next slice — S2.5: resolve the AudioOut buffer bounds stop
+# Next slice — S2.6: submit the encoded frames and observe the first picture
 
 ## The next action — verbatim
 
-S2.5 — Resolve the `AudioOut buffer bounds` stop. S2.4c carried the shader translator (`games/nfs/prebuilt/macos-arm64/totk_xlate` forked from BY3, plus the `make shader-tools` target that verifies it and builds `build/spirv-cross/spirv-cross` from the pinned SPIRV-Cross commit). The headless boot now translates 8 shaders (the first is `vs c10b455d…`) and runs the render loop — 300 encoded frames, GPU submission still disabled — before opening `audout:u` (`AudioOut open 48000 Hz x6 PCM16 -> Core Audio (stereo)`) and stopping at `[nfs] FAIL: AudioOut buffer bounds` (`audio_out.c:94` `append`: `data_offset + data_size <= capacity` fails on the first `AppendAudioOutBuffer`). Resolve that audio failure and continue; record only behavior demonstrated by the resulting run. No gameplay claim.
+S2.6 — Submit the encoded frames and observe the first game-rendered picture. S2.5 resolved the `AudioOut buffer bounds` stop: the append descriptor's `data_offset` is unset by the game (allocator fill), the host now treats an offset past capacity as zero and logs it once, and the 60 s bounded boot opens `audout:u`, appends and drains audio, and runs past frame 900 at p50 33.33 ms with no next stop. The renderer still encodes without submitting (`GPU submission disabled: work is encoded but never submitted (no picture, no GPU results); TOTK_GPU_ALLOW_SUBMIT=1 re-enables it`). Re-run the headless boot with `TOTK_GPU_ALLOW_SUBMIT=1`, record the first submitted frame and any Metal validation failure, draw error, or crash with its own message, and capture a picture through the existing diagnostic path (`TOTK_INPUT_FILE` line `shot <path>` → `dm_gfx_shot_at`). Measure first and record only what the run shows. No gameplay claim.
 
 ## What is settled — do not re-derive
 
-- The shader translator is carried and `make boot` builds it: `games/nfs/prebuilt/macos-arm64/{totk_xlate,totk_xlate.sha256,README.md}` (forked from `games/by3/prebuilt/`; the NFS graphics layer is byte-identical to BY3's), plus the `shader-tools` Makefile target — copy the verified prebuilt to `<work>/build/shader-service/totk_xlate` and build `<work>/build/spirv-cross/spirv-cross` from SPIRV-Cross commit `aa217aeb6c9f0ace7a0ab233b28807edf45eb165`.
-- The headless boot (`.babysteps/scratch/S2.4c-NFS-shader-translator/boot.log`, 198 lines) starts the native service, translates 8 shaders, and runs 300 NVN-encoded frames (frame 1: 27 functions / 32 calls; frame 2: 120 / 4,251 with 12 `CommandBufferDrawArrays`; p50 33.33 / p95 33.46 ms). GPU submission stays disabled (`TOTK_GPU_ALLOW_SUBMIT=1` re-enables), so no picture is observed.
-- The next stop is audio: `audout:u` opens (48000 Hz × 6 ch PCM16 → Core Audio stereo), then `AppendAudioOutBuffer` fails the bounds check `data_offset + data_size <= capacity` at `games/nfs/runtime/audio_out.c:94` (`append`).
-- Temp files go on the external volume: set `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames` for builds/tests (the internal data volume is full; see `.operator/guides/external-tmp.md`). The stale `games/nfs/NFS_build/` (7 GB) is removed.
-- Earlier (S2.1–S2.4c): window-path blockers cleared; 516/523 NVN names resolved; device properties 0x00–0x61 answered; hid command 101 handled; local account override; `friend:u` notification queue answered; friend-invitation event bound; shader translator carried.
+- **The audio stop was a misread field, not a bad buffer.** The first `AppendAudioOutBuffer` is command 7 with a 0x28-byte input buffer (`na=1 nx=1`): `next=0xcdcdcdcdcdcdcdcd, sample_buffer=0x…d5000, capacity=0x1000, data_size=0xc00, data_offset=0xcdcdcdcdcdcdcdcd`. The sample, capacity and size are the game's; `next` and `data_offset` are allocator fill because the title never initialises them. `append` now treats an offset past capacity as zero, logs it once, and applies the check and copy to that offset. `NFS_AUDIO_TRACE=1` prints the first four descriptors.
+- **Audio plays and drains.** The 60 s bounded boot appends four buffers, starts the output, and never hits `AudioOut queue full`, so `GetReleasedAudioOutBuffers` returns buffers and the queue drains. The game is paced by the output (frame p50 33.33 ms).
+- **The boot now has no stop.** It reaches frame 900+, translates two more shaders (`vs bb6f978b…`, `ps 34ebe360…`), and was ended by the timer at 60 s, not by a failure. The render loop keeps producing frames.
+- **No picture yet.** GPU submission stays disabled unless `TOTK_GPU_ALLOW_SUBMIT=1`. The boot leaves `TOTK_PROBE_GPU` unset for `boot` (`games/nfs/runtime/loader.c:463`); probes set it.
+- **A picture path exists.** `TOTK_INPUT_FILE` drives diagnostic lines in `games/nfs/runtime/input.c` (`shot <path>`, `shotn <n> <fmt>`, `wshot <path>`, `gpucapture`, `passdump`, `anomdump`); `shot` calls `dm_gfx_shot_at(2, path)` — the second frame after the command.
+- **The work tree is re-derivable, not evidence.** It lives at `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` (7.1 GB); reconstruct is ~7 min from the NSP, then `make prepare runtime` and `make boot`. Temp goes to `/Volumes/X9BS/externalTmp/MacNativeGames` (`TMPDIR`), never the internal volume.
+- **Budget:** `.babysteps/config.json` plans 180,000 work-unit tokens, but the host window binds — verify the live session model each slice and size to the usable window after the compaction reserve (S2.5: 200,000 context → ~156,000).
+- Earlier (S2.1–S2.5): window paths, NVN names, device properties, HID, account, `friend:u`, friend-invitation event, shader translator, audio — all resolved as recorded in the state file.
 
 ## Do-Not list that applies
 
-- Do-Not #2, #3, #4, #5 (from `docs/donot.md`): do not hash the whole NSP; do not conclude absent from raw bytes; do not blanket-rename fork comments; do not let one `runtime_fail` cover several calls.
+- Do-Not #2, #3, #4, #5, #6 (from `docs/donot.md`): do not hash the whole NSP; do not conclude absent from raw bytes; do not blanket-rename fork comments; do not let one `runtime_fail` cover several calls; do not read a descriptor field as data before checking the game initialises it.
 - Do not claim visual correctness without an observed game frame; do not claim gameplay.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| AudioOut buffer bounds | `games/nfs/runtime/audio_out.c` `append` (~line 90-94) — the `AudioOutBuffer` descriptor parse and the `data_offset + data_size <= capacity` check. The descriptor is read as 5×uint64 (`next, sample_buffer, capacity, data_size, data_offset`, `_Static_assert` 0x28); the game's first `AppendAudioOutBuffer` (cmd 3/7) fails the check, so either the switchbrew layout does not match the game's actual struct or the buffer semantics differ. |
-| Audio service | `games/nfs/runtime/audio_out.c` `manager_handler`/`append` — switchbrew "Audio services" (IAudioOutManager, IAudioOut). |
+| First submitted frame | `games/nfs/runtime/loader.c:463` sets `TOTK_PROBE_GPU` only for probes; `TOTK_GPU_ALLOW_SUBMIT=1` is the boot's switch. The submit gate and its present path are in `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m` — record the first failure message there verbatim, with the command that produced it. |
+| Picture capture | `games/nfs/runtime/input.c` — `TOTK_INPUT_FILE` lines `shot <path>`, `shotn <n> <fmt>`, `wshot <path>`; `dm_gfx_shot_at` and `dm_gfx_window_shot` in the graphics layer. |
+| Submission health | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m` validation/driver messages (`MDIE`, validation errors); `runtime/gfx_probe.c` for the probe path. |
 
 ## Gate commands
 
@@ -37,9 +41,9 @@ S2.5 — Resolve the `AudioOut buffer bounds` stop. S2.4c carried the shader tra
 
 ## Withdrawn numbers
 
-**2, 3, 4, 5** — unchanged from the previous seed.
+**2, 3, 4, 5** — unchanged from the previous seed; do not re-measure them as if new.
 
 ## Specs to read
 
-- `docs/nfs-port-feasibility.md` — "S2.4c — Carry the shader translator and translate a shader toward a frame" (the audio stop is recorded there).
-- switchbrew "Audio services" — the `IAudioOutManager`/`IAudioOut` command and buffer layouts.
+- `docs/nfs-port-feasibility.md` — "S2.5 — Resolve the `AudioOut buffer bounds` stop" (descriptor measurement, fix, resulting run, gate, boundary).
+- `docs/nfs-port-feasibility.md` — "S2.4c — Carry the shader translator and translate a shader toward a frame" (renderer state and the `TOTK_GPU_ALLOW_SUBMIT` note).
