@@ -12,6 +12,7 @@ __pycache__/
 *.sav
 # build output (the work folder normally lives next to the card image)
 TOTK_build/
+NFS_build/
 *.app/
 games/totk/.venv
 games/totk/build/
@@ -26,5 +27,7 @@ games/totk/scripts/shader_inventory/obj/
 games/totk/scripts/shader_inventory/bin/
 ./.rnsk-memory
 .babysteps/
+# transient session scratch
+localTmp/
 .opencode/opencode.json
 .opencode/commands/babysteps-*.md
