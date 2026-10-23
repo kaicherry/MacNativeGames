@@ -104,6 +104,21 @@ static void wait_unlink(thr_t *t) {
     for (thr_t **p = &g_wait; *p; p = &(*p)->next) if (*p == t) { *p = t->next; break; }
     t->next = NULL;
 }
+// Condition waits/wakes kept for the state dump, so the dump names the waiter/signaller pair from the record.
+#define CTRACE_MAX 128
+#define CTRACE_COALESCE_NS 2000000ULL   // one entry per thread+key per window: a signal storm must not flush the ring
+struct ctrace_ent { uint64_t ns; uint64_t key; uint32_t kind, h, woke; };
+static struct ctrace_ent g_ctrace[CTRACE_MAX];
+static unsigned g_ctrace_w;
+static void ctrace_push(uint32_t kind, uint32_t h, uint64_t key, uint32_t woke) {
+    uint64_t now = now_ns();
+    if (g_ctrace_w) {
+        struct ctrace_ent *last = &g_ctrace[(g_ctrace_w - 1) % CTRACE_MAX];
+        if (last->kind == kind && last->h == h && last->key == key && now - last->ns < CTRACE_COALESCE_NS) { last->ns = now; last->woke = woke; return; }
+    }
+    struct ctrace_ent *e = &g_ctrace[g_ctrace_w++ % CTRACE_MAX];
+    e->ns = now; e->kind = kind; e->h = h; e->key = key; e->woke = woke;
+}
 // 按内核顺序挑等待者：优先级数值小者优先，同优先级先登记者优先（持 G）。kind 1 按锁地址、2 按条件键、3 按地址匹配
 // Pick a waiter in kernel order: numerically lower priority first, at equal priority the earlier registered first (holding G). kind 1 matches by lock address, 2 by condition key, 3 by address
 static uint64_t g_wseq;
@@ -455,14 +470,18 @@ int svc_thread(int num, uint64_t *regs) {
         st32(key, 1);
         t->wkey = key; t->waddr = addr; t->wtag = (uint32_t)regs[2];
 #endif
+        ctrace_push(0, t->handle, key, (uint32_t)regs[2]);
         int64_t r = block(t, 2, (int64_t)regs[3]);   // 超时：不重新拿锁（用户态自己拿） | Timeout: the lock is not re-acquired (user mode takes it itself)
+        if (r == R_TIMEOUT) ctrace_push(2, t->handle, key, 0);
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
     }
     case 0x1D: {  // SignalProcessWideKey(x0 条件键, w1 个数，<=0 全部) | SignalProcessWideKey(x0 condition key, w1 count, <=0 all)
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
         pthread_mutex_lock(&G);
-        for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) lock_acquire_for(w, w->waddr, w->wtag);   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
+        uint32_t woke = 0;
+        for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) { if (!woke) woke = w->wtag; lock_acquire_for(w, w->waddr, w->wtag); }   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
+        ctrace_push(1, cur()->handle, key, woke);
         int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
         if (!left) st32(key, 0);
         pthread_mutex_unlock(&G);
@@ -686,6 +705,29 @@ static void *list_check(void *arg) {
         }
     }
 }
+// The words around a waiting condition name the object that owns it: its own flags sit at the key, its pointers resolve to modules.
+static void dump_cond_memory(uint64_t lock, uint64_t key, uint32_t holder) {
+    uint64_t base = lock - 0x60;
+    fprintf(stderr, "[cond-mem] lock=%#llx key=%#llx holder=%#x words %#llx..%#llx\n",
+            (unsigned long long)lock, (unsigned long long)key, holder, (unsigned long long)base, (unsigned long long)(base + 0x100));
+    for (uint64_t a = base; a < base + 0x100; a += 16) {
+        uint64_t w[2] = {0, 0}; mach_vm_size_t got = 0;
+        if (mach_vm_read_overwrite(mach_task_self(), a, 16, (mach_vm_address_t)(uintptr_t)w, &got) != KERN_SUCCESS || got != 16) {
+            fprintf(stderr, "[cond-mem]   %#llx unreadable\n", (unsigned long long)a); break;
+        }
+        char txt[17];
+        for (int i = 0; i < 16; i++) { unsigned char c = ((const unsigned char *)w)[i]; txt[i] = c >= 32 && c < 127 ? (char)c : '.'; }
+        txt[16] = 0;
+        const char *mark = (a == lock || a + 8 == lock) ? " <-lock" : (a == key || a + 8 == key) ? " <-key" : "";
+        fprintf(stderr, "[cond-mem]   %#llx: %016llx %016llx  %s%s\n", (unsigned long long)a,
+                (unsigned long long)w[0], (unsigned long long)w[1], txt, mark);
+        for (int i = 0; i < 2; i++) {
+            uint64_t v = w[i]; if (v < 0x100000000ULL) continue;
+            char where[96]; runtime_describe_address(v, where, sizeof where);
+            if (!(where[0] == '0' && where[1] == 'x')) fprintf(stderr, "[cond-mem]     %#llx -> %s\n", (unsigned long long)(a + i * 8), where);
+        }
+    }
+}
 static void dump_threads(unsigned secs) {
     int locked = 0; for (int i = 0; i < 100 && !(locked = pthread_mutex_trylock(&G) == 0); i++) usleep(10000);
     fprintf(stderr, "[totk-dump] global thread lock %s\n", locked ? "acquired" : "HELD BY ANOTHER THREAD (dumping without it)");
@@ -721,6 +763,27 @@ static void dump_threads(unsigned secs) {
         dump_chain(t->last_lr, t->last_fp);
         if (!t->wkind && !t->exited && t->mport && nrun < 64) run[nrun++] = t;
     }
+    if (g_ctrace_w) {
+        unsigned n = g_ctrace_w < 24 ? g_ctrace_w : 24, first = g_ctrace_w - n;
+        fprintf(stderr, "[cond-trace] last %u condition events (0=wait 1=signal 2=timeout):\n", n);
+        for (unsigned i = first; i < g_ctrace_w; i++) {
+            struct ctrace_ent *e = &g_ctrace[i % CTRACE_MAX];
+            const char *k = e->kind == 0 ? "wait" : e->kind == 1 ? "signal" : "timeout";
+            fprintf(stderr, "[cond-trace]   -%.1f ms %s key=%#llx by=%#x woke=%#x\n",
+                    (now_ns() - e->ns) / 1e6, k, (unsigned long long)e->key, e->h, e->woke);
+        }
+    }
+    { uint64_t done[16]; int ndone = 0;
+      for (thr_t *t = g_all; t; t = t->all) {
+        uint64_t lock, key; int dup = 0;
+        if (t->wkind == 2 && t->wkey) { lock = t->waddr; key = t->wkey; }
+        else if (t->wkind == 1 && t->waddr) { lock = t->waddr; key = t->waddr + 4; }
+        else continue;
+        for (int i = 0; i < ndone; i++) if (done[i] == lock) dup = 1;
+        if (dup) continue;
+        if (ndone < 16) done[ndone++] = lock;
+        dump_cond_memory(lock, key, t->handle);
+      } }
     if (locked) pthread_mutex_unlock(&G);
     for (int i = 0; i < nrun; i++) { thr_t *t = run[i]; fprintf(stderr, "[totk-dump] live h=%#x\n", t->handle);
             for (int k = 0; k < 3; k++) {
