@@ -723,8 +723,8 @@ The picture path works. `shot` at frame 2 wrote a 1920x1080 PNG that is pure bla
 144) is also black. The 15 s shot (**frame 441**) is the first non-black capture: mean 0.000697, max 0.996, a small white
 bar in the lower right (`f15.png`). That is what the captured frame shows; no further visual-correctness claim.
 
-A new stop appears after the picture. Presenting stops once the game reaches **frame 600 (~20 s)**: the 30 s, 50 s and
-65 s shots produce no file. A 40 s thread dump (`boot3.log`) shows guest thread `0x1002` on core 0 for **16.7 s** with
+A new stop appears after the picture. Presenting stops between **frame 354 and 600 (12–20 s)** across the runs (boot1
+stopped at 354, boot2 at 600): the 30 s, 50 s and 65 s shots produce no file. A 40 s thread dump (`boot3.log`) shows guest thread `0x1002` on core 0 for **16.7 s** with
 `wait=0` and `nsvc=71,196,080`, while the other guest threads wait; the process stays alive until the timer. The 55 s
 `hletrace` run (`boot4.log`) records **460 `QueueSubmitCommands` and 460 `QueuePresentTexture`** calls and 154,805 host
 calls to 214 functions. The cause is not established; the spin, not a Metal error, is the next observation.
@@ -736,4 +736,32 @@ calls to 214 functions. The cause is not established; the spin, not a Metal erro
   `games/nfs/...` and the external work tree.
 - Scratch: `.babysteps/scratch/S2.6-NFS-first-frame/{boot1.log,boot2.log,boot3.log,boot4.log,frame2.png,f05.png,f15.png,gate.log}`.
 
-The post-600 stall is the next port blocker; the operator's requested log-language pass is the next slice.
+The present stall is the next port blocker; S2.7 is the operator's requested log-language pass.
+
+## S2.7 — Make the host diagnostics emit English (2026-10-22)
+
+The host surface held **721 Chinese string literals across 22 files** and 61 `TOTK_UI("中文","English")` pairs. The first
+same-line inventory found 316 (266 `MLOG`, 44 `printf`, 6 `NSString`); the rest sat in multi-line `MLOG`/`snprintf` calls,
+including the `[nvn]` frame summaries in `hle_nvn.c`. All 721 were translated with every format conversion and argument
+preserved (the conversion sequences were compared mechanically before applying), and comments and identifiers were left
+alone. `totk_ui_lang.h` now returns English unless `TOTK_UI_LANG` starts with `zh`; the game's own language stays on
+`TOTK_LANG`.
+
+Two bounded headless boots (25 s, 35 s) with `TOTK_GPU_ALLOW_SUBMIT=1` and `TOTK_UI_LANG` unset each wrote a 191-line
+stderr log with **zero non-ASCII characters**; the frame-300 summary reads `[nvn] timing to frame 300: ...` in English.
+No crash line was recorded and each run ended by its timer. The first stopped at **frame 399 (13.6 s)**, the second at
+**frame 354 (12.0 s)** — the same present stall S2.6 saw, not a regression. Those stops also show S2.6's "frame 600" was
+one run's stop, not the stall's frame; the observed range is **354–600** (Do-Not #8).
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, exit 0 (`.babysteps/scratch/S2.7-NFS-english-logs/gate.log`).
+- Boundary: all 22 changed code paths are under `games/nfs`; no `games/totk`/`games/by3` reference and no build/script
+  change. Outside `totk_ui_lang.h` the diff is string content only (verified by masking every string literal and comparing
+  the remaining source with HEAD). The language selector no longer calls `CFLocale`; no new linkage.
+- Scratch: `.babysteps/scratch/S2.7-NFS-english-logs/{boot2.log,boot3.log,build.log,build2.log,gate.log}` is evidence;
+  `{mlog.tsv,printf.tsv,translate.tsv,chunk*.tsv,rem*.tsv,translated*.tsv,rem*-en.tsv,boot*.stdout}` is the removal list,
+  not deleted.
+- Code commit `13d2b2b`.
+
+The present stall is the next blocker: S2.8.
