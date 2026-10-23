@@ -39,6 +39,8 @@
 #define R_OUT_OF_RES  0xCE01u   // 103
 #define WAITERS_BIT   0x40000000u
 #define H_CUR_THREAD  0xFFFF8000u
+// core_slice_ns is the longest a thread may hold a virtual core while an equal-priority thread waits for it.
+#define CORE_SLICE_NS 4000000ULL
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, O_TMEM };   // O_SESSION / O_TMEM: IPC objects owned by ipc.c
 typedef struct event { int signaled; int refs; } event_t;
@@ -63,6 +65,7 @@ typedef struct thr {
     uint32_t qos;
     int cur_core;              // virtual core held while running guest code, -1 while blocked / not started
     int preempt;               // a higher-priority thread waits for this thread's core
+    int yield_eq;              // an equal-priority thread waits for this core: hand it over after the slice
     uint64_t cseq, core_since; struct thr *cnext;
     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
@@ -155,7 +158,7 @@ static void core_grant(int c) {   // holding G: give free core c to the best wai
 }
 static void core_put(thr_t *t) {   // holding G
     if (t->cur_core < 0) return;
-    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
+    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; t->yield_eq = 0; g_core_owner[c] = NULL; core_grant(c);
 }
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
     if (!cores_enabled() || t->cur_core >= 0) return;
@@ -164,7 +167,10 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
-    for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;
+    for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i]) {
+        if (g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;   // higher priority preempts at the next SVC
+        else if (g_core_owner[i]->prio == t->prio) g_core_owner[i]->yield_eq = 1;   // equal priority waits for the slice
+    }
     while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
@@ -179,10 +185,11 @@ void runtime_core_back(int *away) {
     thr_t *t = me_or_null(); if (!*away || !t) return;
     pthread_mutex_lock(&G); core_take(t); pthread_mutex_unlock(&G);
 }
-// Preemption point at SVC entry: a higher-priority thread waits for this core.
+// Preemption point at SVC entry: a higher-priority thread preempts at once; an equal-priority one after core_slice_ns.
 void runtime_core_checkpoint(void) {
-    thr_t *t = me_or_null(); if (!t || !t->preempt) return;
-    pthread_mutex_lock(&G); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
+    thr_t *t = me_or_null(); if (!t) return;
+    if (!t->preempt && !(t->yield_eq && now_ns() - t->core_since >= CORE_SLICE_NS)) return;
+    pthread_mutex_lock(&G); core_put(t); core_take(t); pthread_mutex_unlock(&G);
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
 
