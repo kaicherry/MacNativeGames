@@ -40,7 +40,7 @@ $(OUT)/nfs-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS)
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a \
 	  -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics \
 	  -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation \
-	  -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+	  -framework AudioToolbox -framework CoreAudio -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 
 runtime: $(OUT)/nfs-native
 

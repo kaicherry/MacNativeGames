@@ -1,17 +1,17 @@
 ---
-slice: S3.1
+slice: S2.22
 stateFile: docs/STATE.md
 donotCount: 20
-seededFrom: 32f9b49
+seededFrom: f845abd
 ---
 
-# Next slice — S3.1: Implement input, storage, and saves (roadmap S3)
+# Next slice — S2.22: keep the audio alive through an interruption
 
 ## The next action — verbatim
 
-S3.1 — Implement input, storage, and saves (roadmap S3), the first approved work unit after S2 (graphics and first frame) completed at S2.20. S2.20 verified the shader and visual output and recorded its exact boundary: the first 8 translated shaders are 4 vertex + 4 pixel stages, all translated inside frame 2, which is bound (`ProgramSetShaders=6`, `CommandBufferBindProgram=11`), drawn (`CommandBufferDrawArrays=12`) and presented (`QueuePresentTexture=1`, `GPU 0.9 ms`) — named by one submission-enabled boot with a fresh `TOTK_SHADER_CACHE` (`.babysteps/scratch/S2.20-shader-visual/`); every captured frame's content and frame number is recorded in the S2.20 section of `docs/STATE.md`; and visual correctness is claimed only for them (no gameplay, no final picture). The measured entry blockers for S3.1: input is already served (the HID service of S2.2b and the pad read of S2.11), while the boot reaches the save-data access notice and waits for Ⓐ (S2.11 frame 1788, `P-post1.png`) and `games/nfs/runtime` contains **no** `SaveData` HLE at all, so nothing can answer that Ⓐ yet. Slice S3.1 into work units before starting it; its first unit and its close condition are set when it is sliced. Do not re-open the descriptor, release, publish or credit lines without a new observation (Do-Not #8, #13, #15, #17). Do not claim gameplay. Do not touch `games/totk` or `games/by3`.
+S2.22 — Keep the audio alive through an interruption. **The game's audio is now heard** (operator: "game audio that time", `stereo.log`): the queue had been created on the `AQDefaultDevice` pseudo-device and is now bound explicitly to the default device's UID and follows it when the default changes. Do not re-open that — `NFS_AUDIO_TEST=1` proved the device and process with a 440 Hz tone through the same queue, and the stereo trace (`peak` 15885, 99.5% non-zero, `mean` 1302) ruled out the downmix and a DC offset. The one open defect is the **interruption**: a system alert once cut the stream with a pop while `kAudioQueueProperty_IsRunning` stayed true, so the `IsRunning` monitor cannot see it. Detect a stalled feed instead — `appends` advancing while `played` does not, with `state == STATE_STARTED` — and rebuild the queue (`AudioQueueDispose`, `AudioQueueNewOutput`, re-bind `kAudioQueueProperty_CurrentDevice`, `AudioQueueStart`, release the lost tags so the guest does not stall). `Start`/`Stop`/`Flush`/`Close` and the default-vs-queue UIDs are already logged. Do not claim gameplay. Do not touch `games/totk` or `games/by3`.
 
-S3.1's close condition is **not yet defined**: S3.1 is a roadmap line, not a work unit. Its first unit — the save path, whose close must be a recorded Ⓐ answer against a named frame, since the save-data notice is the guest's own next wait — is set when the slice is cut. Do not start S3.1 as one unit.
+S2.22 closes when an interruption is reproduced and the sound returns without restarting the boot, with the log naming the detection and the rebuild; or the read fails with its own message and the command that produced it. Then S3.1 (input, storage, saves) resumes — see the S3.1 note below.
 
 ## What is settled — do not re-derive
 
