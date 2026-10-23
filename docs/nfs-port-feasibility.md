@@ -560,3 +560,63 @@ Headless boot after the HID implementation passes the first HLE GPU frame and op
 - `.babysteps/scratch/S2.3-NFS-hid/{boot-before-account-override.log,boot-before-account-override-svc-trace.log,boot-final.log,gate-final.log}` preserve the before/after traces and full gate.
 - The nested work folder uses `WORK=.` for `make prepare` and `make runtime`; the Makefile default `WORK=NFS_build` points one level too deep in this copy.
 - Gate: `make prepare WORK=.` and `make runtime WORK=.` succeeded; `python -m unittest discover -s tests` passed 255 tests, 1 skipped, with the known non-fatal subprocess `ResourceWarning`.
+
+## S2.4 — Resolve the `friend:u` service open (2026-10-22)
+
+Implementation and observation slice. The S2.3 `friend:u` service-open blocker is resolved: the runtime now
+registers `friend:u` and answers the friend notification-queue path the game reached. The boot advances past
+the notification queue to a new stop — a null dereference in the friend-invitation notification path, which
+reaches `nn::am::GetApplicationFunctions()`. No game picture was observed, so no visual-correctness or
+gameplay claim is made.
+
+### The `friend:u` service, and the notification path it answers
+
+`games/nfs/runtime/friends_service.c` registers `friend:u` (`runtime_ipc_register("friend:u", …)`), the
+`nn::friends::detail::ipc::IServiceCreator` of switchbrew "Friend services". The headless boot, in order:
+
+- `friend:u` opens; `CreateFriendService` (cmd 0) returns an `IFriendService` move handle — the shim stores it
+  and sends no command on it.
+- `CreateNotificationService` (cmd 1, 16-byte userID) returns an `INotificationService` move handle.
+- `INotificationService` `GetEvent` (cmd 0) returns a never-signalled readable event (copy handle); `Clear`
+  (1) and `Pop` (2) are no-ops because offline there is nothing queued.
+
+`IFriendService` and the creator's `CreateDaemonSuspendSessionService` (2) are report-on-call stubs: the
+notification path does not reach them, and any command they do receive still stops the runtime with its id —
+no unobserved command is implemented.
+
+### The next stop
+
+After the notification queue initializes, the boot creates four more guest threads, then faults at
+`sdk+0x19d210` (SIGSEGV, fault `0x0`) inside `nn::friends::GetFriendInvitationNotificationEvent`
+(`sdk+0x19d1b0`). The faulting instruction `ldr x8, [x0]` dereferences the return of
+`nn::am::GetApplicationFunctions()` (`_ZN2nn2am23GetApplicationFunctionsEv`, the `bl` at `0x19d20c`), which is
+NULL: the applet-manager's application-functions interface was never initialized, and
+`games/nfs/runtime/applet_host.c` overrides `GetAppletResourceUserId` but not `GetApplicationFunctions`.
+
+The friend-invitation notification path therefore does not go through `friend:u`; it goes through the applet
+manager (`nn::am`). Resolving `friend:u` unblocks the notification queue, not friend-invitation notifications.
+
+### Not observed
+
+No game-rendered picture: GPU submission stays disabled by default (`TOTK_GPU_ALLOW_SUBMIT=1` re-enables it;
+the first GPU frame is encoded but never submitted). No present, frame, audio, or gameplay is reached.
+
+### Gate
+
+`python -m unittest discover -s tests` passed 255 tests, 1 skipped, with the known non-fatal subprocess
+`ResourceWarning`. Boundary: `friends_service.c` is self-contained in `games/nfs/runtime/` (includes
+`runtime.h` and `ipc.h` only); no reach into `games/totk` or `games/by3`.
+
+### Source references
+
+- `.babysteps/scratch/S2.4-NFS-friends/boot.log` — the headless boot log (friend:u opens, notification path
+  answers, then the `nn::am::GetApplicationFunctions` null dereference).
+- `.babysteps/scratch/S2.4-NFS-friends/gate.log` — the passing baseline.
+- `games/nfs/runtime/friends_service.c` — the new service.
+- switchbrew "Friend services" — the `IServiceCreator`/`INotificationService` command layouts.
+
+### Closeout
+
+Closes-when met: the `friend:u` service-open blocker is resolved and the resulting run is recorded to its next
+stop; no visual-correctness or gameplay claim. The friend-invitation notification path
+(`nn::am::GetApplicationFunctions()` returning NULL) is the next blocker, split to the next slice.

@@ -2,9 +2,9 @@
 
 ## Where the work is
 
-On branch `port/need-for-speed-hot-pursuit-remastered`, the NFS native macOS port is in S2.4. The loader reaches `nnMain`, the HLE has run the first GPU frame, and the latest headless boot stops while opening the unimplemented `friend:u` service; no race or gameplay is established. The target remains the user-owned base NSP v0 at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are local build-time inputs and must not be committed. The target is Apple-silicon macOS; `games/totk/` and `games/by3/` are reference trees, not NFS runtime/build-time dependencies.
+On branch `port/need-for-speed-hot-pursuit-remastered`, the NFS native macOS port is in S2.4. The loader reaches `nnMain`, the HLE has run the first GPU frame, and the `friend:u` service open is resolved (notification queue answered); the latest headless boot stops at a null dereference in `nn::friends::GetFriendInvitationNotificationEvent`, which reaches `nn::am::GetApplicationFunctions()` returning NULL; no race or gameplay is established. The target remains the user-owned base NSP v0 at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are local build-time inputs and must not be committed. The target is Apple-silicon macOS; `games/totk/` and `games/by3/` are reference trees, not NFS runtime/build-time dependencies.
 
-S2.3 is complete: HID command 101 is handled, local account calls no longer fall through to the SDK's uninitialized account holder, and boot now stops at the missing `friend:u` service. No race or gameplay is established.
+S2.3 is complete: HID command 101 is handled, local account calls no longer fall through to the SDK's uninitialized account holder, and boot now stops at the missing `friend:u` service. S2.4 resolves that `friend:u` open (notification queue answered); the boot now stops further on, at a null dereference in the friend-invitation notification path. No race or gameplay is established.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
@@ -12,25 +12,25 @@ The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified a
 
 ## Next action
 
-S2.4 — Verify shader and visual correctness. The current entry blocker is the S2.3 service-manager failure opening `friend:u`; no command on that service or final game picture has been observed. Resolve or split that blocker before claiming visual correctness.
+S2.4b — Continue toward an observed game frame. S2.4 resolved the `friend:u` service open (notification queue answered: `CreateFriendService` → `CreateNotificationService` → `GetEvent`). The boot now stops at a null dereference in `nn::friends::GetFriendInvitationNotificationEvent` (`sdk+0x19d210`), which dereferences the NULL returned by `nn::am::GetApplicationFunctions()` — the applet-manager application-functions interface is neither initialized nor overridden (`applet_host.c` overrides `GetAppletResourceUserId` only). Resolve that blocker before any visual-correctness claim; record only behavior demonstrated by the resulting run.
 
 Gate: `python -m unittest discover -s tests` passes; every device-init or visual-correctness claim is tied to a recorded observation; no gameplay claim.
 
-S2.4 closes when visual correctness is recorded from an observed game frame; no gameplay claim is required for this slice.
+S2.4b closes when the boot advances past the friend-invitation notification event and the next stop is recorded; no visual-correctness claim is made (no game frame yet), and no gameplay claim is required.
 
 **The Do-Not list is `docs/donot.md`** — 5 entries, append-only. Never dropped, never trimmed.
 
 ## Completed
 
-S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, device properties 0x00–0x5f answered. S2.2 is complete: properties 0x60/0x61 classified, first GPU frame runs. S2.2b is complete: hid IPC service registered (13 commands, Initialize through system properties).
+S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; the NFS loader boots through `nnMain`, but no NFS gameplay is established. The test fixture repair is complete, but it is not an NFS port task. S2.1 is complete: both window-path blockers resolved, 516 NVN function names resolved, device properties 0x00–0x5f answered. S2.2 is complete: properties 0x60/0x61 classified, first GPU frame runs. S2.2b is complete: hid IPC service registered (13 commands, Initialize through system properties). S2.3 is complete: boot traced through HID and account to the `friend:u` stop. S2.4's `friend:u` blocker is resolved: the notification queue opens and answers (`CreateFriendService` → `CreateNotificationService` → `GetEvent`); visual correctness is still unobserved.
 
 ## In progress
 
-No active slice. S2.4 is promoted next and begins at the unresolved `friend:u` service-open blocker; see `docs/slices/NEXT.md`.
+S2.4b — continue toward an observed game frame; begins at the `nn::am::GetApplicationFunctions()` null return; see `docs/slices/NEXT.md`.
 
 ## Queued
 
-The roadmap below contains approved candidate work units. S2.4 is promoted as the next task; the unresolved `friend:u` service open is its current entry blocker. The S1.3 splits are carried into S2.1/S3.2. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
+The roadmap below contains approved candidate work units. S2.4b is promoted as the next task; the `nn::am::GetApplicationFunctions()` null return is its current entry blocker. The S1.3 splits are carried into S2.1/S3.2. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
 
 - S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code. **DONE**
 - S0.2 — Use existing package/module analysis tools to map loading, rewrite/SDK, NVN, and service requirements; decide go/no-go for defining S1 implementation work. **DONE**
@@ -187,3 +187,13 @@ The roadmap below contains approved candidate work units. S2.4 is promoted as th
 - Scratch logs: `.babysteps/scratch/S2.3-NFS-hid/{boot-before-account-override.log,boot-before-account-override-svc-trace.log,boot-final.log,gate-final.log}`.
 - Boundary: tracked code changes are confined to `games/nfs/runtime/`; no new `games/totk/` or `games/by3/` path references. The local build mirror and generated artifacts remain untracked. Do-Not count remains 5.
 - No final picture or gameplay is claimed. S2.4 is promoted with `friend:u` as its current entry blocker.
+
+### S2.4 — Resolve the `friend:u` service open (2026-10-22)
+
+- **`friend:u` service open resolved.** `games/nfs/runtime/friends_service.c` registers `friend:u` and answers the friend notification-queue path: `CreateFriendService` (0) returns an `IFriendService` move handle (stored, never commanded), `CreateNotificationService` (1, 16-byte userID) returns an `INotificationService` move handle, and `INotificationService` `GetEvent` (0) returns a never-signalled readable event (offline: no notifications), with `Clear` (1) and `Pop` (2) as no-ops. `IFriendService` and `CreateDaemonSuspendSessionService` (2) are report-on-call stubs — no unobserved command is implemented.
+- **Next stop.** After the notification queue, four more guest threads are created, then SIGSEGV (exit 139, fault `0x0`) at `sdk+0x19d210` inside `nn::friends::GetFriendInvitationNotificationEvent` (`sdk+0x19d1b0`): it dereferences the NULL returned by `nn::am::GetApplicationFunctions()` (`_ZN2nn2am23GetApplicationFunctionsEv`). The friend-invitation notification path goes through the applet manager (`nn::am`), not `friend:u`; `applet_host.c` overrides `GetAppletResourceUserId` but not `GetApplicationFunctions`.
+- **No picture, no visual claim.** GPU submission stays disabled (`TOTK_GPU_ALLOW_SUBMIT=1` re-enables); the first GPU frame is encoded but never submitted. No present, frame, audio, or gameplay.
+- **Code changed** (committed with the feasibility report): `games/nfs/runtime/friends_service.c` only.
+- **Scratch evidence.** `.babysteps/scratch/S2.4-NFS-friends/{boot.log,gate.log}`.
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`. Boundary: `friends_service.c` is self-contained in `games/nfs/runtime/` (includes `runtime.h` and `ipc.h` only); no reach into `games/totk` or `games/by3`. Do-Not count remains 5.
+- No visual-correctness or gameplay claim. S2.4b is promoted with the `nn::am::GetApplicationFunctions()` null return as its entry blocker.
