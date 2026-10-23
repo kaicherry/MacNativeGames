@@ -428,7 +428,7 @@ static void module_inits(void) {
  for(unsigned i=0;i<NM;i++){
   if(!modules[i].executable){fprintf(stderr,"[nfs] SKIP %s DT_INIT (text not executable: shares a host page with its data)\n",modules[i].name);continue;}
   if(!modules[i].init){fprintf(stderr,"[nfs] SKIP %s DT_INIT (none in the dynamic table)\n",modules[i].name);continue;}
-  char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[nfs] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();
+  char detail[128];snprintf(detail,sizeof detail,TOTK_UI("Running the %s game module initializers (%u/%u)","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[nfs] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();
   if(!modules[i].ctor_flag){fprintf(stderr,"[nfs] RETURN %s DT_INIT (constructor-state check skipped: no load decoded)\n",modules[i].name);continue;}
   uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
  fprintf(stderr,"[nfs] RETURN %s DT_INIT state=%u init_array_count=%llu\n",modules[i].name,state,(unsigned long long)(modules[i].init_size/8));}
