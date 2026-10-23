@@ -677,3 +677,36 @@ submitted. No gameplay claim.
   see `.operator/guides/external-tmp.md`) — the S2.4b gate was RED only because the system data volume was full.
 
 The `AudioOut buffer bounds` stop is the next blocker, split to S2.5.
+
+## S2.5 — Resolve the `AudioOut buffer bounds` stop (2026-10-22)
+
+The stop was a misread descriptor field, not an out-of-range buffer. The first `AppendAudioOutBuffer` (command 7)
+carries a 0x28-byte input buffer holding `next=0xcdcdcdcdcdcdcdcd, sample_buffer=0x70d03d5000, capacity=0x1000,
+data_size=0xc00, data_offset=0xcdcdcdcdcdcdcdcd`: the sample buffer, capacity (4096 bytes) and data size (3072 bytes)
+are the game's, while `next` and `data_offset` hold allocator fill. The SDK copies all 0x28 bytes of
+`nn::audio::AudioOutBuffer`, but this title never initialises `data_offset`, and the service accepts the descriptor —
+so the host's unconditional `data_offset + data_size <= capacity` failed on a field that is not data.
+
+`games/nfs/runtime/audio_out.c` `append` now treats an offset greater than the capacity as unset (a legitimate offset
+cannot exceed the buffer), logs it once per boot, and applies the bounds check to the normalised offset. A descriptor
+whose offset fits the buffer but whose data runs past it still fails. `NFS_AUDIO_TRACE=1` prints the first four
+descriptors — command, tag, input buffer, all five words, and the offset actually used.
+
+### Resulting run
+
+After the change the 60 s bounded headless boot (`.babysteps/scratch/S2.5-NFS-audio-bounds/boot3.log`, 238 lines)
+opens `audout:u`, appends four buffers, starts the output, and keeps playing: no queue-full, so
+`GetReleasedAudioOutBuffers` returns buffers and the queue drains. The render loop reaches frame 900+ at p50
+33.33 ms, translating two more shaders (`vs bb6f978b…`, `ps 34ebe360…`), and records **no next stop** — the run was
+ended by the timer, not by a failure. GPU submission stays disabled, so no picture and no visual-correctness claim;
+no gameplay claim.
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`.
+- Boundary (scope: this slice's diff, `games/nfs/runtime/audio_out.c`): linkage clear (no added include, no call into
+  `games/totk` or `games/by3`); paths clear (no absolute or predecessor path in the diff).
+- Scratch: `.babysteps/scratch/S2.5-NFS-audio-bounds/{reconstruct.log,boot.log,boot3.log,rebuild*.log,gate.log}`. The
+  work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and not evidence.
+
+The absence of a stop makes the first submitted frame the next observation: S2.6.
