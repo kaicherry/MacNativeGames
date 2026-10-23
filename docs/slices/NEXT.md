@@ -1,8 +1,8 @@
 ---
 slice: S3.1
 stateFile: docs/STATE.md
-donotCount: 18
-seededFrom: a0c2e15
+donotCount: 20
+seededFrom: 32f9b49
 ---
 
 # Next slice — S3.1: Implement input, storage, and saves (roadmap S3)
@@ -19,6 +19,8 @@ S3.1's close condition is **not yet defined**: S3.1 is a roadmap line, not a wor
 - **The 8 translated shaders are 4 vs + 4 ps, and frame 2 binds and presents them (S2.20).** Keys are in the S2.20 section. A shader named only in a run with `TOTK_GPU_ALLOW_SUBMIT` off is not evidence of drawing — that run encodes but never submits — and that was the leg S2.20 closed with one boot.
 - **Presenting is stable and the old stop is fixed (S2.9/S2.10).** S2.9's equal-priority core rotation (4 ms `CORE_SLICE_NS`) fixed the 354–677 stop; S2.10's runs present to frame 3600 (130 s) and 5447 (185 s) with zero stops. What remains is intermittent: 1 of 20 bounded 65 s boots (S2.13 r17) and 3 in 34 post-fix watchdog runs; do not pin it to a frame (Do-Not #8) and do not re-open the descriptor/release/publish/credit lines (S2.16–S2.19; Do-Not #13/#15/#17).
 - **The guest reacts to input (S2.11).** A ⊕ press moved the boot from the `PRESS ⊕` title screen to the save-data access notice, which waits for Ⓐ.
+- **Audio output recovers; the attract opener is silent (S2.21).** `audio_out.c` opens one Core Audio `AudioQueue` and a `device_monitor` thread now restarts it when Core Audio stops it (a device change, an interruption); `NFS_AUDIO_TRACE` reports appends / loudest sample / played samples / queue depth / volume every ~2 s. The opening attract screens produce `peak` 0 for ~12 s before real audio — "no sound" right after launch is the game, not the port, and a mix claim needs the trace, not silence (Do-Not #20).
+- **A run must be built from the repo, not from the work tree (Do-Not #19).** `nfs-work/nfs` is an `rsync -a` snapshot whose preserved mtimes make a stale tree look current; before offering a run, re-`rsync` with `build_app.py`'s excludes (`/extracted /rewritten /build /analysis /.venv /tooling /user-data`) and force it (`rm -rf build/obj build/nfs-native`).
 - **Host diagnostics are English for `games/nfs` only (S2.20 check).** Every Han string in `games/nfs` is a `TOTK_UI("中文","English")` pair (plus the `swkbd_host.c` keyboard fixtures, which are input data). `games/by3` (444 emitted lines) and `games/totk` (474) still emit Chinese — S2.7's pass was NFS-only. Do not read an NFS language claim as covering them, and do not touch those trees from this port.
 - **Gate.** `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 255 tests, 1 skipped, exit 0, 22.608 s on 2026-10-23.
 
@@ -50,7 +52,7 @@ S3.1 is not yet sliced, so this is what its first unit (the save path) will touc
 - `.operator/specs/nfs-account.md` — the account HLE pattern (a service that must not fall through).
 - `docs/donot.md` #7–#18.
 
-## Do-Not entries that apply here (8 of 18)
+## Do-Not entries that apply here (10 of 20)
 
 - #7 — do not call a log bilingual because its source comments carry an English sentence.
 - #8 — do not name a stall by the frame one run happened to stop at; report the range and the runs.
@@ -60,12 +62,15 @@ S3.1 is not yet sliced, so this is what its first unit (the save path) will touc
 - #14 — do not read a stop rate or frame count taken while another local process held the GPU as a property of the build.
 - #17 — do not name main's own call by the SDK function an unwind frame reaches.
 - #18 — do not gate a slice's close condition behind a prohibition on the evidence that condition demands.
+- #19 — do not treat a work tree as the repo; `rsync -a` mtimes hide the drift, so rebuild from the repo before any run.
+- #20 — do not read the absence of a sound as a broken path without measuring the samples.
 
 ## The gate
 
 - `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passes (255 tests, 1 skipped, exit 0 on 2026-10-23).
 - A bounded headless boot is evidence only when it is the observation a claim rests on; its stop rate or frame touch is reportable only with the GPU otherwise free — a batch taken while another local process held the GPU is discarded (Do-Not #14). Check the GPU before any batch.
 - Every claim tied to a recorded observation; no gameplay claim; save-data behaviour is not claimed until the guest's Ⓐ is answered by a host call and a frame shows the result.
+- **Offer the operator a run after any change that alters what he sees or hears** (`.operator/operator.md`), built from the repo (Do-Not #19). The next review point is when the boot gets past the licence/attract screens; do not schedule one before that.
 
 ## When this slice closes
 

@@ -14,6 +14,8 @@
 #include <time.h>
 
 enum { STATE_STARTED = 0, STATE_STOPPED = 1, FORMAT_PCM16 = 2, DEFAULT_RATE = 48000, QUEUE_MAX = 32 };
+/* MONITOR_PERIOD_MS is the longest the sound may stay dead after the output device goes away. */
+enum { MONITOR_PERIOD_MS = 200 };
 typedef struct { uint64_t next, sample_buffer, capacity, data_size, data_offset; } AudioOutBuffer;   /* the client's descriptor */
 _Static_assert(sizeof(AudioOutBuffer) == 0x28, "AudioOutBuffer");
 typedef struct { uint64_t tag, bytes; } Queued;
@@ -24,6 +26,9 @@ typedef struct {
     Queued queue[QUEUE_MAX]; unsigned nqueue;          /* appended, not yet played (head first) */
     uint64_t released[QUEUE_MAX]; unsigned nreleased;  /* played, not yet collected by GetReleasedAudioOutBuffers */
     uint64_t played_samples;
+    uint64_t appends;                                  /* NFS_AUDIO_TRACE: appended buffers, and the loudest sample in them */
+    unsigned peak_sample;
+    uint64_t nz_samples, sum_abs, total_samples;       /* NFS_AUDIO_TRACE: is the appended audio continuous or sparse spikes? */
 } AudioOut;
 
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
@@ -57,6 +62,39 @@ static void *silent_playback(void *arg) {
         struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
 }
+/* Core Audio stops the queue when its output device goes away — a device change, an interruption,
+   another app taking the device. The guest cannot see it and keeps appending, so left alone the
+   session is silent and then stalls on a full queue. Restart it on the current default device. */
+static void *device_monitor(void *arg) {
+    AudioOut *o = arg; int stopped = 0, trace = getenv("NFS_AUDIO_TRACE") != NULL; unsigned ticks = 0;
+    for (;;) {
+        struct timespec ts = {0, MONITOR_PERIOD_MS * 1000000};
+        nanosleep(&ts, NULL);
+        pthread_mutex_lock(&o->lock);
+        int alive = o->running, started = o->state == STATE_STARTED;
+        if (trace && ++ticks % 10 == 0) {                         /* every ~2 s: is the guest feeding real audio, and is it draining? */
+            fprintf(stderr, "[nfs] audout trace: appends=%llu peak=%u played=%llu queued=%u vol=%g nonzero=%llu/%llu mean=%.0f\n",
+                    (unsigned long long)o->appends, o->peak_sample, (unsigned long long)o->played_samples, o->nqueue, o->volume,
+                    (unsigned long long)o->nz_samples, (unsigned long long)o->total_samples,
+                    o->total_samples ? (double)o->sum_abs / (double)o->total_samples : 0.0);
+            o->peak_sample = 0; o->nz_samples = 0; o->sum_abs = 0; o->total_samples = 0;
+        }
+        pthread_mutex_unlock(&o->lock);
+        if (!alive) return NULL;
+        if (!started) { stopped = 0; continue; }              /* the guest paused; a stop is expected */
+        UInt32 running = 0, size = sizeof running;
+        int playing = AudioQueueGetProperty(o->aq, kAudioQueueProperty_IsRunning, &running, &size) == 0 && running != 0;
+        if (playing) {
+            if (stopped) fprintf(stderr, "[totk-audio] AudioOut: the output is playing again on the current device\n");
+            stopped = 0;
+            continue;
+        }
+        OSStatus s = AudioQueueStart(o->aq, NULL);            /* retried quietly while the device is away */
+        if (!stopped) fprintf(stderr, "[totk-audio] AudioOut: the output queue had stopped (device change or interruption); restart -> %d\n", (int)s);
+        stopped = 1;
+    }
+}
+
 static void open_device(AudioOut *o) {
     const char *e = getenv("NFS_AUDIO");
     o->silent = e && !strcmp(e, "0");
@@ -67,7 +105,7 @@ static void open_device(AudioOut *o) {
         OSStatus s = AudioQueueNewOutput(&f, played, o, NULL, kCFRunLoopCommonModes, 0, &o->aq);
         if (s) { fprintf(stderr, "[totk-audio] AudioOut: no Core Audio output (%d); continuing silent\n", (int)s); o->silent = 1; }
     }
-    if (o->silent) need(pthread_create(&o->thread, NULL, silent_playback, o) == 0, "AudioOut playback thread");
+    need(pthread_create(&o->thread, NULL, o->silent ? silent_playback : device_monitor, o) == 0, "AudioOut playback thread");
 }
 /* Interleaved PCM16 of the client's layout -> stereo PCM16 (the queue's format). */
 static void to_stereo(const int16_t *in, int16_t *out, uint64_t frames, uint32_t channels) {
@@ -111,6 +149,19 @@ static void append(AudioOut *o, const IpcRequest *rq) {
                 (unsigned long long)offset, (unsigned long long)d.data_size,
                 (unsigned long long)d.capacity, rq->cmd, (unsigned long long)tag);
         runtime_fail("AudioOut buffer bounds");
+    }
+    if (getenv("NFS_AUDIO_TRACE")) {                     /* the loudest sample in the buffer the guest just handed us */
+        const int16_t *s = (const int16_t *)ipc_guest(d.sample_buffer + offset, d.data_size);
+        unsigned peak = 0;
+        uint64_t nz = 0, sum = 0;
+        for (uint64_t i = 0; i < d.data_size / 2; i++) { int v = s[i]; unsigned a = v < 0 ? (unsigned)-v : (unsigned)v; if (v) nz++; sum += a; if (a > peak) peak = a; }
+        pthread_mutex_lock(&o->lock);
+        o->appends++;
+        o->nz_samples += nz;
+        o->sum_abs += sum;
+        o->total_samples += d.data_size / 2;
+        if (peak > o->peak_sample) o->peak_sample = peak;
+        pthread_mutex_unlock(&o->lock);
     }
     pthread_mutex_lock(&o->lock);
     need(o->nqueue < QUEUE_MAX, "AudioOut queue full");
@@ -166,7 +217,8 @@ static void audio_out_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
         if (any) runtime_event_signal(o->event);
         IPC_OUT(rs, any); return;
     }
-    case 12: o->volume = IPC_ARG(rq, float, 0); if (o->aq) AudioQueueSetParameter(o->aq, kAudioQueueParam_Volume, o->volume); return;   /* SetAudioOutVolume */
+    case 12: o->volume = IPC_ARG(rq, float, 0); if (o->aq) AudioQueueSetParameter(o->aq, kAudioQueueParam_Volume, o->volume);
+        { static int noted; if (!noted++) fprintf(stderr, "[nfs] audout volume -> %g\n", o->volume); } return;   /* SetAudioOutVolume */
     case 13: { float v = o->volume; IPC_OUT(rs, v); return; }                                   /* GetAudioOutVolume */
     default: ipc_unimplemented(s, rq);
     }
@@ -174,8 +226,8 @@ static void audio_out_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
 static void audio_out_close(void *p) {
     AudioOut *o = p;
     pthread_mutex_lock(&o->lock); o->running = 0; pthread_mutex_unlock(&o->lock);
+    pthread_join(o->thread, NULL);                 /* the monitor must be gone before the queue is disposed */
     if (o->aq) AudioQueueDispose(o->aq, true);
-    if (o->silent) pthread_join(o->thread, NULL);
     pthread_mutex_destroy(&o->lock); free(o);
 }
 
