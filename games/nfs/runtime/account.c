@@ -22,6 +22,8 @@ static void lock_acquire(void){check_guard();pthread_mutex_lock(&lock_);uint64_t
 static void lock_release(void){lock_owner=0;pthread_mutex_unlock(&lock_);check_guard();}
 uint64_t runtime_account_lock_owner(void){const uint32_t *w=(const uint32_t *)(const void *)&guarded;fprintf(stderr,"[totk-dump] account lock with guards @%p:",(void *)&guarded);for(unsigned i=0;i<sizeof(guarded)/4;i++)fprintf(stderr," %08x",w[i]);fputc('\n',stderr);return lock_owner;}
 static uint64_t tokens[64],nextToken=1;
+// accountInvalidArgumentResult is the one bad-output result, so malformed requests cannot look like an empty user list.
+static const uint32_t accountInvalidArgumentResult=0x7c67u;
 static void initialize(void){
  lock_acquire();if(local.lo||local.hi){lock_release();return;}
  const char *dir=getenv("TOTK_PROFILE_DIR");if(!dir)dir="user-data";
@@ -36,6 +38,11 @@ static void initialize(void){
 static bool same(const Uid *uid){return uid&&uid->lo==local.lo&&uid->hi==local.hi;}
 static bool valid(const UserHandle *handle){if(!handle||!same(&handle->uid))return false;for(unsigned i=0;i<64;i++)if(tokens[i]&&tokens[i]==handle->token)return true;return false;}
 static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null user handle");initialize();lock_acquire();for(unsigned i=0;i<64;i++)if(!tokens[i]){tokens[i]=nextToken++;*out=(UserHandle){local,tokens[i]};lock_release();return 1;}lock_release();return 0;}
+static uint32_t list_open_users(int *out_count,Uid *out_users,int max_out_users){
+ if(!out_count||(max_out_users>0&&!out_users))return accountInvalidArgumentResult;
+ initialize();lock_acquire();bool open=false;for(unsigned i=0;i<sizeof tokens/sizeof tokens[0];i++)if(tokens[i]){open=true;break;}
+ *out_count=(int)open;if(open&&max_out_users>0)*out_users=local;lock_release();return 0;
+}
 static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
@@ -43,7 +50,8 @@ static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!same(u
 void runtime_account_uid(uint64_t out[2]){initialize();out[0]=local.lo;out[1]=local.hi;}
 void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
- {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
+ {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi",list_open_users},
+ {"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
  {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;

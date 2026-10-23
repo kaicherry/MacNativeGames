@@ -38,7 +38,17 @@ static void write_vibration_handles(uint64_t addr, uint32_t count) {
 }
 
 /* ---------- hid: handler ---------- */
+static unsigned hid_call_count;
 static void hid_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    fprintf(stderr, "[nfs-hid] #%u cmd=%u type=%u x%u a%u b%u w%u c%u data=%u\n",
+            ++hid_call_count, rq->cmd, rq->type, rq->nx, rq->na, rq->nb, rq->nw, rq->nc, rq->data_size);
+    if (rq->data_size > 0 && rq->data_size <= 256) {
+        const uint32_t *d = (const uint32_t *)rq->data;
+        unsigned words = rq->data_size / 4;
+        fprintf(stderr, "[nfs-hid]   in:");
+        for (unsigned i = 0; i < words && i < 16; i++) fprintf(stderr, " %08x", d[i]);
+        fputc('\n', stderr);
+    }
     switch (rq->cmd) {
     case 0: {                                                            /* Initialize / RegisterClient */
         uint32_t ret = 0;
@@ -115,12 +125,16 @@ static void hid_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
         uint64_t addr = 0;
         IPC_OUT(rs, addr); return;
     }
+    case 101: {                                                          /* SDK init / unknown command */
+        uint32_t ret = 0;
+        IPC_OUT(rs, ret); return;
+    }
     default:
-        fprintf(stderr, "[totk-hid] command %u not implemented\n", rq->cmd);
+        fprintf(stderr, "[nfs-hid] command %u not implemented\n", rq->cmd);
         ipc_unimplemented(s, rq);
     }
 }
 
 __attribute__((constructor)) static void register_hid_service(void) {
-    runtime_ipc_register("hid:", hid_handler, NULL, NULL);
+    runtime_ipc_register("hid", hid_handler, NULL, NULL);
 }

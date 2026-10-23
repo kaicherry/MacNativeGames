@@ -538,3 +538,25 @@ display state that produced S1.3's -6661 was not re-created.
 - `games/nfs/runtime/frontend.m` — display-link fallback and the offscreen VI layer (`vsync_signal`, `vi_initialize`).
 - `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c:104` — `nvn_lookup` first-seen resolution log (DM_NVN_LOG).
 - `games/nfs/third_party/d2r_gfx/gfx/nvn/include/nvn.h:321-331` — `NVNdeviceInfo` values naming the stop.
+
+## S2.3 — Boot through HID and stop at `friend:u`
+
+Headless boot after the HID implementation passes the first HLE GPU frame and opens `hid`. Only HID command 101 is observed in this run; it is handled, then two more guest threads are created and the focus policy is stored. Commands 0–12 are not exercised here. The run stops when the service manager is asked for `friend:u`; no friend-service command is observed.
+
+### Account path and first stop
+
+- The first run faulted at `sdk+0x21a0` with `x0=0`, exit 139. The instruction is in `nn::account::ListOpenUsers`, which dereferences the SDK application-account service holder at SDK `.bss` `+0xc70a30`.
+- The caller is `nn::friends::detail::CheckUserStatus`, reached from `nn::friends::NotificationQueue::Initialize`. The local account override replaces `nn::account::Initialize` but does not create the SDK `acc:u0` holder; allowing the original `ListOpenUsers` to run therefore dereferenced null state.
+- `games/nfs/runtime/account.c` now overrides `ListOpenUsers` against the local UID/open-handle state. The rerun passed that call and advanced to the next stop.
+
+### Next stop
+
+- The rerun stops at `[totk-ipc] sm: service "friend:u" not implemented`, followed by `FAIL: IPC service not implemented` (exit 1).
+- The recorded callers pass through `nn::friends::NotificationQueue::Initialize`, `nn::friends::detail::ShimLibraryGlobal::CreateNotificationService`, `nn::friends::detail::ipc::Initialize`, `nn::sm::GetServiceHandle`, and the HIPC service-handle processor. The registry has no `friend:u` handler, so no friend IPC command is reached.
+- No gameplay or final picture is claimed. The logs show only the previously recorded first GPU frame and the new service-open boundary.
+
+### Evidence and gate
+
+- `.babysteps/scratch/S2.3-NFS-hid/{boot-before-account-override.log,boot-before-account-override-svc-trace.log,boot-final.log,gate-final.log}` preserve the before/after traces and full gate.
+- The nested work folder uses `WORK=.` for `make prepare` and `make runtime`; the Makefile default `WORK=NFS_build` points one level too deep in this copy.
+- Gate: `make prepare WORK=.` and `make runtime WORK=.` succeeded; `python -m unittest discover -s tests` passed 255 tests, 1 skipped, with the known non-fatal subprocess `ResourceWarning`.

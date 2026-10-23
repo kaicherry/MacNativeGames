@@ -196,6 +196,12 @@ static void control(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
 static void dispatch(IpcSession *s, uint32_t *m) {
     IpcRequest rq; const uint32_t *words; unsigned ndata;
     parse(m, &rq, &words, &ndata);
+    /* Preserve HIPC framing here; handlers receive only parsed request fields. */
+    if (s->name[0] == 'h' && s->name[1] == 'i' && s->name[2] == 'd') {
+        fprintf(stderr, "[totk-ipc] RAW hid: type=%u ndata=%u words:", rq.type, ndata);
+        for (unsigned i = 0; i < ndata + 8; i++) fprintf(stderr, " %08x", m[i]);
+        fputc('\n', stderr);
+    }
     if (getenv("TOTK_IPC_DUMP") && rq.na + rq.nb) { fprintf(stderr, "[totk-ipc] raw %s:", s->name); for (unsigned i = 0; i < 20; i++) fprintf(stderr, " %08x", m[i]); fputc('\n', stderr); }
     IpcResponse rs; memset(&rs, 0, sizeof rs);
     if (rq.type == T_CLOSE || rq.type == T_TIPC_CLOSE) return;

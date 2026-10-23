@@ -2,9 +2,9 @@
 
 ## Where the work is
 
-On branch `port/need-for-speed-hot-pursuit-remastered`, this is the initial BabySteps interview stage for a new NFS Hot Pursuit Remastered Switch port; no NFS implementation exists yet. The target is the user-owned base NSP v0 staged at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are intended local build-time inputs, not boundary paths, and must not be committed. The approved target is Apple-silicon macOS first; success is a packaged native app completing a representative race with correct picture, controls, audio, and saves. `games/totk/` and `games/by3/` are approved reference predecessor paths and rebuild boundary paths. The NFS target must not retain runtime/build-time path dependencies on either; adapting or copying code into the NFS target is not retaining a path dependency.
+On branch `port/need-for-speed-hot-pursuit-remastered`, the NFS native macOS port is in S2.4. The loader reaches `nnMain`, the HLE has run the first GPU frame, and the latest headless boot stops while opening the unimplemented `friend:u` service; no race or gameplay is established. The target remains the user-owned base NSP v0 at `target-port/need-for-speed-hot-pursuit-remastered/game.nsp`, with ignored `prod.keys` beside it. The NSP and keys are local build-time inputs and must not be committed. The target is Apple-silicon macOS; `games/totk/` and `games/by3/` are reference trees, not NFS runtime/build-time dependencies.
 
-**The next action** is S2.3 — Boot the NFS runtime with the `hid` service implemented (controller input). S2.2's 0x60/0x61 are classified (return 0) and the init chain proceeds: NVN device init completes, the first GPU frame runs (27 functions, 32 calls), then the game stops at `FAIL: IPC service not implemented` with the missing service being `hid`. The runtime already has GameController framework wiring in the HID layer; implement `hid` so controller input works end-to-end instead of blocking the boot on an unimplemented IPC. The indirect first-present target and runtime trace (S2.1 resolved) and the `sub_63fea0` entry path (S3.2) remain carried.
+S2.3 is complete: HID command 101 is handled, local account calls no longer fall through to the SDK's uninitialized account holder, and boot now stops at the missing `friend:u` service. No race or gameplay is established.
 
 The previous RED baseline is closed. In `tests/test_updates.py`, the two fake-tree tests now create `.venv/bin/python` and symlink it to `sys.executable`; production code is unchanged. Both targeted update-test module runs passed (14 tests under Python 3.15 and 14 under Python 3.14). Full `python -m unittest discover -s tests` and `python3.14 -m unittest discover -s tests` each passed: 255 tests, 1 skipped. Each full run emitted a non-fatal `ResourceWarning` about a subprocess still running; this does not make the suite red.
 
@@ -12,13 +12,13 @@ The 350,000 work-unit ceiling is planned, not a hard live cutoff. The verified a
 
 ## Next action
 
-S2.3 — Boot with the `hid` service implemented and trace to the next stop. S2.2b registered `hid:` with handlers for 13 commands (Initialize, user handles, style set, vibration/six-axis handles, battery, npad counts, system properties). The game now opens `hid:` and proceeds past hid initialization. Run `make boot` headless, capture the full boot log, and trace what happens next: controller setup, account flow, and the next IPC or runtime blocker. Every IPC command observed, every fail path recorded, no gameplay claim.
+S2.4 — Verify shader and visual correctness. The current entry blocker is the S2.3 service-manager failure opening `friend:u`; no command on that service or final game picture has been observed. Resolve or split that blocker before claiming visual correctness.
 
-Gate: `python -m unittest discover -s tests` passes; every device init claim is tied to a recorded observation; no gameplay claim.
+Gate: `python -m unittest discover -s tests` passes; every device-init or visual-correctness claim is tied to a recorded observation; no gameplay claim.
 
-Close when the boot log is captured past hid initialization, the next stop point is identified (IPC command, runtime fail, or other blocker), S2.2b's hid implementation is verified against observed calls, and no claim extends past what was observed. Make no gameplay claim.
+S2.4 closes when visual correctness is recorded from an observed game frame; no gameplay claim is required for this slice.
 
-**The Do-Not list is `docs/donot.md`** — 4 entries, append-only. Never dropped, never trimmed.
+**The Do-Not list is `docs/donot.md`** — 5 entries, append-only. Never dropped, never trimmed.
 
 ## Completed
 
@@ -26,11 +26,11 @@ S0.1, S0.2, S0.3, S1.1, S1.2, S1.3a, S1.3b, S1.3c and S1.3 tasks are complete; t
 
 ## In progress
 
-S2.3 — Boot with the hid service implemented and trace to the next stop.
+No active slice. S2.4 is promoted next and begins at the unresolved `friend:u` service-open blocker; see `docs/slices/NEXT.md`.
 
 ## Queued
 
-The roadmap below contains approved candidate work units. S2.1 is promoted as the next task; the S1.3 splits are carried into S2.1/S3.2. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
+The roadmap below contains approved candidate work units. S2.4 is promoted as the next task; the unresolved `friend:u` service open is its current entry blocker. The S1.3 splits are carried into S2.1/S3.2. Preflight later work against the 350,000 planned work-unit ceiling and split further before work if needed. This is not a host-enforced live cutoff and no automatic stop is promised.
 
 - S0.1 — Inspect the staged NSP using the local keys and produce an evidence-based feasibility report; do not implement port code. **DONE**
 - S0.2 — Use existing package/module analysis tools to map loading, rewrite/SDK, NVN, and service requirements; decide go/no-go for defining S1 implementation work. **DONE**
@@ -49,7 +49,7 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 
 - S2.1 — Map the required NVN surface. **DONE**
 - S2.2 — Resolve NVN device properties 0x60/0x61 and continue the device init chain to the first frame. **DONE**
-- S2.3 — Boot with the hid service implemented and trace to the next stop. **IN PROGRESS**
+- S2.3 — Boot with the hid service implemented and trace to the next stop. **DONE**
 - S2.4 — Verify shader and visual correctness.
 
 ### S3 — Services and playable race (approved)
@@ -176,3 +176,13 @@ The roadmap below contains approved candidate work units. S2.1 is promoted as th
 - **hid: IPC service implemented.** `games/nfs/runtime/hid_service.c` registers the `hid:` service via `runtime_ipc_register("hid:", hid_handler, NULL, NULL)` and handles 13 commands: Initialize/RegisterClient (0), GetApplicationControlUserHandle (1), GetNewestControlUserHandle (2), GetControlUserHandle (3), GetSupportedNpadStyleSet (4), IsNewestControlUserEnabled (5), GetVibrationDeviceHandles (6), GetSixAxisSensorHandle (7), GetBatteryInfo (8), IsUserAttached (9), GetNpadCounts (10), GetSystemProperties (11), GetNpadAddr (12). Vibration handles return 2 (left/right) with Switch-style handle layout; six-axis returns 0 (no Switch controllers on Mac); battery reports 100%/full; npad counts report 1 connected; system properties report docked model, en-US language, 1 user. Unknown commands still stop the runtime.
 - **Code changed, committed `9be4912`**. Self-contained in `games/nfs/runtime/`; no calls into `games/totk/` or `games/by3/`.
 - **Gate.** `python -m unittest discover -s tests` exited 0: 255 tests, 1 skipped. Boundary: linkage clear (only `hid_service.c` changed, includes `runtime.h` and `ipc.h` only), paths clear (self-contained).
+
+### S2.3 — Boot through HID and trace to the next stop (2026-10-22)
+
+- The service is registered as `hid` (no colon); only command 101 is observed in this run and it is handled. Commands 0–12 are not exercised here. The boot then creates two guest threads and stores focus policy 3.
+- The first run stopped at `sdk+0x21a0`: `nn::account::ListOpenUsers` dereferenced a null SDK account-service holder. `nn::account::Initialize` is locally overridden and does not initialize that holder, so `ListOpenUsers` now uses the same persisted UID/open-handle state instead of falling through to the SDK.
+- The rerun passed that fault and stopped at `[totk-ipc] sm: service "friend:u" not implemented`. Its call chain is `friends::NotificationQueue::Initialize` → `friends::detail::ShimLibraryGlobal::CreateNotificationService` → `friends::detail::ipc::Initialize` → `nn::sm::GetServiceHandle`. The service open fails before any `friend:u` command is observed.
+- Build: `make prepare WORK=.` and `make runtime WORK=.` succeeded from the staged work folder. `python -m unittest discover -s tests` passed 255 tests, 1 skipped, with the known non-fatal subprocess `ResourceWarning`.
+- Scratch logs: `.babysteps/scratch/S2.3-NFS-hid/{boot-before-account-override.log,boot-before-account-override-svc-trace.log,boot-final.log,gate-final.log}`.
+- Boundary: tracked code changes are confined to `games/nfs/runtime/`; no new `games/totk/` or `games/by3/` path references. The local build mirror and generated artifacts remain untracked. Do-Not count remains 5.
+- No final picture or gameplay is claimed. S2.4 is promoted with `friend:u` as its current entry blocker.
