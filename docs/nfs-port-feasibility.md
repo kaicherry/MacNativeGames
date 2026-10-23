@@ -620,3 +620,22 @@ the first GPU frame is encoded but never submitted). No present, frame, audio, o
 Closes-when met: the `friend:u` service-open blocker is resolved and the resulting run is recorded to its next
 stop; no visual-correctness or gameplay claim. The friend-invitation notification path
 (`nn::am::GetApplicationFunctions()` returning NULL) is the next blocker, split to the next slice.
+
+## S2.4b — Resolve the friend-invitation notification event null dereference (2026-10-22)
+
+`games/nfs/runtime/applet_host.c` overrides `nn::friends::GetFriendInvitationNotificationEvent`
+(`_ZN2nn7friends36GetFriendInvitationNotificationEventEv`) to bind the SDK's process-global friend-invitation
+`SystemEventType` (`sdk+0xcabfb0`) to a never-signalled host event (`hle_bind_system_event`) instead of letting its
+lazy init dereference the NULL `nn::am::GetApplicationFunctions()`. Offline there are no friend invitations, so the
+event never fires.
+
+The resulting headless boot passes `friend:u` and the friend-invitation path (log: `friend-invitation notification
+event bound, never signalled (offline)`), reaches the game's own environment init (`EnvironmentService`,
+`AppLifecycle`, `DirectorService`), and begins shader translation. It stops at the shader translation service: neither
+the native translator (`build/shader-service/totk_xlate`) nor the Python script (`scripts/shader_service.py`) is
+carried in this tree (`totk_shader_rt.m` `service_start`), so the game's first shader request (`c10b455d…`) fails and
+the boot exits (code 2). The shader tooling arrives with the app-assembly slice.
+
+No game-rendered picture is observed (GPU submission stays disabled), so no visual-correctness or gameplay claim.
+Source references: `.babysteps/scratch/S2.4b-NFS-friends-event/boot.log`; commit `c493904`. The shader-translation
+service is the next blocker, split to S2.4c.
