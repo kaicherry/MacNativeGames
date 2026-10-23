@@ -1,67 +1,61 @@
 ---
-slice: S2.9
+slice: S2.10
 stateFile: docs/STATE.md
-donotCount: 8
-seededFrom: ff1a5f4
+donotCount: 9
+seededFrom: d8a90e4
 ---
 
-# Next slice — S2.9: name the condition-variable object and fix the lost wakeup
+# Next slice — S2.10: capture what the boot presents past the old stop, and the next stop
 
 ## The next action — verbatim
 
-S2.9 — Name the guest object that owns the condition variable at guest heap+0xC284E8A8 and the waiter/signaller pair in the present stop, then fix the lost wakeup. S2.8 measured the stop with `TOTK_PRESENT_WATCHDOG` and the thread dump: six bounded boots stopped at frames 440, 677, 676, 545, 565 and 494 (14.9–22.8 s; the prior record is 354–600), `submissions == last presented frame` in every run, and the created guest thread `0x1002` was either spinning in `SignalProcessWideKey` (0x1D) on the key or waiting in `WaitProcessWideKeyAtomic` (0x1C) on the same key; the render thread `0x1001` stopped submitting. Identify the object and the missing signal from the dump and the call chains before changing behaviour; do not fix from a guess. Measure first and record only what the run shows; no gameplay claim.
+S2.10 — With the condition-variable stop fixed, capture what the boot presents past the old stop range and record what the next stop is, if any. S2.9 named the object and the pair (worker `0x1002` spinning/signal-waiting on the third `nn::os::EventType` at `heap+0xC284E888`, cv at `+0xC284E8A8`; main `0x1001` woken onto an event critical section and starved for core 0) and fixed the core handoff with an equal-priority slice; runs then presented `timing to frame 2400` with zero present stops in 90 s, against the prior record of stops at 354–677. Take bounded headless captures past frame 677 (the `shot <path>` line in `TOTK_INPUT_FILE`, as in S2.6) and record what the picture shows and whether a new stop appears; every claim tied to a recorded observation; no gameplay claim and no visual-correctness claim beyond captured frames.
 
-S2.9 closes when the object at guest heap+0xC284E8A8 and the waiter/signaller pair are named from a recorded dump, the lost wakeup is fixed, and a bounded headless boot presents past frame 677 without the condition-variable stall; or the first probe fails with its own message and the command that produced it.
+S2.10 closes when a capture past frame 677 exists and what it shows is recorded, and either no new stop appears in the bounded run or the next stop is recorded with its own message and the command that produced it; or the first probe fails with its own message and the command that produced it.
 
 ## What is settled — do not re-derive
 
-- **The stop state is one condition variable, not the present queue.** Every run has `submissions == last presented frame` at the stop; no frame was submitted without presenting, and the next frame was never submitted. The stop is before submission, not in Metal, a fence, or a present event.
-- **The condition variable is at guest heap+0xC284E8A8** (lock word at heap+0xC284E8A4, tag/thread `0x1002`). Per-run addresses differ only by the randomized heap base: A `0x7c7284e8a8`, B `0x73f284e8a8`, C/E `0x70f284e8a8`, D `0x7bf284e8a8`, F `0x70f284e8a8`.
-- **The wait/spin split.** In A/B/C/E/F the created guest thread `0x1002` (prio 44, core 0) spins in `SignalProcessWideKey` (0x1D) on that key — top counts 11,149,511 / 11,642,620 / 11,084,815 / 4,635,340 / 11,148,046, key word 0. In D it waits in `WaitProcessWideKeyAtomic` (0x1C) on the same key (`wait=2`, `addr=heap+0xC284E8A4`, `key=heap+0xC284E8A8`); core 0 owner 0. The render thread `0x1001` (the NVN caller, `hletrace` tags its calls `h=0x1001`) is in the guest lock path in the spin runs (A/F: `wait=0`, last SVC `0x1A ArbitrateLock`, A `heap+0xC284E7A4`, F `heap+0xC284E824`) and waits on a different condition in D (`wait=2`, key `0x16ae6c8f8`, last host call `nn::oe::TryPopNotificationMessage`). No fix.
-- **The stop frame and time vary; neither is pinned.** S2.8: 440, 677, 676, 545, 565, 494 (14.9–22.8 s). Prior: S2.6 354 and 600; S2.7 399 and 354. Range **354–677**, 12.0–22.8 s. Identical configurations differ (A 440/14.9 s vs D 545/18.4 s vs F 494/16.6 s). Report the range and the runs (Do-Not #8).
-- **`framestep` is a no-op in NFS.** `runtime_frame_step_pin` is `void runtime_frame_step_pin(double ms) { (void)ms; }` (`games/nfs/runtime/game_patches.c:13`); boots B/C are not a frame-rate separation test and no `framestep` result may be cited as one.
-- **Diagnostics available.** `TOTK_PRESENT_WATCHDOG=<ms>` (unset/0 off; `1` = 1500 ms) prints one `[nvn] present stop: last presented frame …` line at the first present gap after frame 2 and calls the thread dump. The dump prints each thread's last SVC `x0..x3`, a top-3 SVC histogram, and the relevant word: for `0x1C` it reads the key `x1`, for `0x1A`/`0x1B`/`0x1D` the address in `x0`, and for a condition wait (`wkind==2`) the key.
-- **Dump limitation.** D's log shows the `0x1C` lock word (`x0`, 0), not the key (`x1`); the `0x1C` path writes the key before releasing the lock. F used the corrected dump and spun, so a waiting key word has not yet been observed. If a new run shows a wait, record the key word.
-- **Call chains to name the object.** `0x1002`: `sdk+0xd88504` (spin) / `sdk+0xd884dc` (wait) <- `main+0x75679c` or `main+0x756e64` <- `main+0x756900`/`main+0x7593e0` <- `main+0x745260` (thread entry) <- `sdk+0x55b800` <- `sdk+0x33e7a8` <- `sdk+0x342f74` <- `dm_thread_enter+0x20`. `0x1001` runs through `main+0x349f90`, `main+0x3522bc`, `main+0x366004`.
-- **Last new host call under `hletrace 2`.** A `nvnCommandBufferDrawElementsBaseVertex` 13.146 s; B/C/D/E `nvnBufferFinalize` 18.247–18.277 s. A/F stop before that finalize, so it is not causal.
+- **The stop was a core-handoff failure, not a lost signal.** Boot1/boot2: main `0x1001` (mask `0x1` — core 0 only) was woken from `ArbitrateLock` (word `0x40001001`, owner `0x1001` with waiters) and waited in `core_take` for the whole 2.6 s gap (`core waiter 0x1001 prio 44 mask 0x1`) while worker `0x1002` held core 0 for the same 2.6 s and spun `0x1D` 11,095,006 times (boot1; 11,108,312 in boot2) with no `SleepThread` and no block. `0x1003`/`0x1004` then queued behind the starved main thread's critical section. The wakeup arrived; the core handoff did not (Do-Not #9).
+- **The object is named.** Three 0x80-byte `nn::os::EventType` objects at `heap+0xC284E788`, `+0xC284E808`, `+0xC284E888` (cs at +0x1c, cv at +0x20 — the layout `SignalEvent` uses at `sdk+0x338e30`). The seed's key `heap+0xC284E8A8` is the third event's cv; its cs at `heap+0xC284E8A4` read `0x1002` (thread `0x1002` inside it). `TimedWaitEvent` (`sdk+0x33906c`, from `main+0x756e60`) waits; `SignalEvent` (`sdk+0x338e50`, via the refcounted closure runner `main+0x756720`/`0x7568e0` from `main+0x756798`) signals. The trace shows `signal key=...E8A8 by=0x1002 woke=0` (no waiter) while `0x1005` waits and times out on `...E858a8` every 37 ms.
+- **The fix.** `core_take` marks `yield_eq` on equal-priority co-core owners; `runtime_core_checkpoint` (SVC entry, `services.c:307`) hands the core over once the holder has run `core_slice_ns` = 4 ms; higher-priority preemption is unchanged. Do not change `core_slice_ns` as part of a capture slice.
+- **Verified state.** `boot3.log`: 90 s, zero present stops, `timing to frame 2400`, p50 33.33 ms; `boot4.log`: 30 s, frame 600, zero stops. The prior stop range 354–677 is superseded; report ranges, not one run's frame (Do-Not #8).
+- **Diagnostics available.** `TOTK_PRESENT_WATCHDOG=<ms>` (unset/0 off; `1` = 1500 ms) prints one `[nvn] present stop: last presented frame …` line at the first present gap and calls the thread dump; the dump now also prints the condition ring (`[cond-trace]`, last 24 waits/signals/timeouts with age) and a 0x100-byte window per waiting lock (`[cond-mem]`, `<-lock`/`<-key` markers, module pointers resolved). All three fire at a stop, never in normal play.
+- **Capture.** The input file's `shot <path>` line writes the current presented frame as PNG (S2.6, headless). The frame-441 capture (S2.6, `.babysteps/scratch/S2.6-NFS-first-frame/f15.png`) remains the only visual record, and no gameplay is established.
 - **Build and run.** Build from `games/nfs` with `WORK=/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work/nfs`; run from the work tree `./build/nfs-native rewritten/nfs100 boot` with `TOTK_HEADLESS=1 TOTK_GPU_ALLOW_SUBMIT=1`, `TMPDIR` on `/Volumes/X9BS/externalTmp/MacNativeGames`, bounded with `timeout -k 5 N`. The work tree is re-derivable, not evidence.
-- **Gate and code.** S2.8 code commit `ff1a5f4`; `python -m unittest discover -s tests` passed 255 tests, 1 skipped. No picture was taken in S2.8; the S2.6 frame-441 capture is the only visual record and no gameplay is established.
+- **Gate and code.** S2.9 commits `0c4e0b9` (condition ring + memory window) and `d8a90e4` (rotation); `python -m unittest discover -s tests` passed 255 tests, 1 skipped.
 
 ## Withdrawn — proven wrong, do not use
 
-- "Presenting stops at frame 600." S2.6's frame-600 was one run; the observed range is 354–677 (Do-Not #8).
-- "The stop tracks wall time" and "the stop tracks frame count." Both excluded: identical configurations stopped at different frames and times.
-- "B/C separate frame rate by `framestep` 16.7 vs 50 ms." Withdrawn; `runtime_frame_step_pin` is a no-op in NFS.
-- "The condition key word is 0 in every run." The 0 is the spin runs' key word; D's waiting key was not read (the old dump read the lock at `x0`). The corrected dump reads it.
-- "The main thread `0x1001` is the spinning thread." Withdrawn; `0x1002` is a created guest thread, and `0x1001` is the render/NVN thread.
-- Numbers **2, 3, 4, 5** — unchanged from earlier seeds; do not re-measure. The prior record numbers (8 shaders, frame 441, p50 33.33 ms; GPU p50 0.86–1.45 ms; 255 tests; 721 strings) are quoted as history, not re-derived.
+- "The present stop is a lost wakeup/condition race." Withdrawn: the wakeup arrived (owner word `0x40001001`) and the woken thread could not get its core (Do-Not #9).
+- "The condition key word is 0 in every run." Withdrawn: S2.9's windows read the waiters' keys as `0x1` (a waiter is registered); the `0` belonged to the spinning signaller's key and to `0x1002`'s unwaited event.
+- "The main thread `0x1001` is the spinning thread." Withdrawn; `0x1002` is the created guest thread.
+- "Presenting stops at frame 600 / 354 / 677" as a pinned value. The stop is not pinned to a frame; report the range and the runs (Do-Not #8).
+- Numbers **2, 3, 4, 5** — unchanged from earlier seeds; do not re-measure. Prior record numbers (8 shaders, frame 441, p50 33.33 ms; GPU p50 0.86–1.45 ms; 255 tests; 721 strings) are quoted as history, not re-derived.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| Name the object | Dump the memory around `heap+0xC284E8A8` (vtable/pointers) and resolve the dump call chains; start in `games/nfs/runtime/threads.c`. |
-| Fix the wakeup | `games/nfs/runtime/threads.c` for the HLE `0x1A/0x1B/0x1C/0x1D` condition/lock protocol; `games/nfs/runtime/game_patches.c` only for a guest patch if the race is in the game; `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c` only if the present/frame loop is involved. |
-| Do not | Change `runtime_frame_step_pin` as part of the fix, and do not fix before the waiter/signaller pair is named from a dump. |
+| Capture | `TOTK_INPUT_FILE` `shot <path>` lines (mechanism in `games/nfs/runtime/input.c`); PNGs into the slice's scratch dir. |
+| Next stop | Only if a new stop appears: the file its message names; `games/nfs/runtime/threads.c` only if the stop is a synchronization stop, and name its waiter/signaller pair from a dump before changing anything. |
+| Do not | Do not change `core_slice_ns` or `runtime_core_checkpoint` in a capture slice; do not touch `games/totk` or `games/by3`. |
 
 ## Read these first, and only these
 
-- `docs/nfs-port-feasibility.md` — "S2.8 — Locate the NFS present stop".
-- `docs/STATE.md` — the S2.8 write-up and next action.
-- `docs/donot.md` #4, #7, #8.
-- `.babysteps/scratch/S2.8-NFS-present-stop/bootA.log`–`bootF.log` (the dumps) and `gate.log`.
+- `docs/nfs-port-feasibility.md` — "S2.9 — Name the condition object and fix the lost wakeup".
+- `docs/donot.md` #8, #9.
+- `.babysteps/scratch/S2.9-cond-object/boot3.log` (the clean 90 s run), `boot1.log`/`boot2.log` (the stop and its dump).
 
-## Do-Not entries that apply here (3 of 8)
+## Do-Not entries that apply here (2 of 9)
 
-- #4 — **Do not blanket-rename a forked tree's comments to the new game's name.** The NFS fork's comments carry predecessor measurements.
-- #7 — **Do not call a log bilingual because its source comments carry an English sentence.** Check the emitted string.
 - #8 — **Do not name a stall by the frame one run happened to stop at.** Report the range and the runs.
+- #9 — **Do not model a virtual core without rotating equal-priority threads.** A woken sibling that can only run on that core is the same as no wakeup.
 
 ## The gate
 
 - `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passes.
-- A bounded headless boot with `TOTK_PRESENT_WATCHDOG` and the dump; every claim tied to a recorded observation; no gameplay claim and no visual-correctness claim beyond captured frames.
+- A bounded headless boot with `TOTK_PRESENT_WATCHDOG` and a capture past frame 677; every claim tied to a recorded observation; no gameplay claim and no visual-correctness claim beyond captured frames.
 
 ## When this slice closes
 
-Write the next seed from what S2.9 leaves behind, re-verify the Do-Not count (8 or higher), and commit the state, the feasibility record and the seed.
+Write the next seed from what S2.10 leaves behind, re-verify the Do-Not count (9 or higher), and commit the state, the feasibility record and the seed.

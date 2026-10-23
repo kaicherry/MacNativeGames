@@ -831,3 +831,38 @@ not causal.
 - Code commit `ff1a5f4`.
 
 The condition-variable stop is the next blocker: S2.9.
+
+## S2.9 — Name the condition object and fix the lost wakeup (2026-10-22)
+
+Four bounded headless boots (`TOTK_PRESENT_WATCHDOG=2500`, `hletrace 2`;
+`.babysteps/scratch/S2.9-cond-object/boot1.log`–`boot4.log`) carried two new
+diagnostics: a condition ring (last 24 waits/signals/timeouts, coalesced per
+thread+key per 2 ms) and a 0x100-byte memory window around each waiting lock.
+
+**The object is named.** The windows show three 0x80-byte `nn::os::EventType`
+objects at `heap+0xC284E788`, `+0xC284E808`, `+0xC284E888` (cs at +0x1c, cv at
++0x20 — the layout `SignalEvent` uses at `sdk+0x338e30`). `heap+0xC284E8A8` is the
+third event's condition variable, its critical section at `heap+0xC284E8A4`; the
+cs word read `0x1002` — thread `0x1002` inside that event's critical section — and
+the same event appears as `wait=2 addr=+0xC284E8A4 key=+0xC284E8A8`.
+`TimedWaitEvent` (`sdk+0x33906c`, from `main+0x756e60`) waits on it; `SignalEvent`
+(`sdk+0x338e50`, via the refcounted closure runner `main+0x756720`/`0x7568e0`
+called from `main+0x756798`) signals it. The trace records
+`signal key=...E8A8 by=0x1002 woke=0` (no waiter) while `0x1005` waits and times
+out on `...E858a8` every 37 ms.
+
+**The wakeup arrived; the core handoff did not** (Do-Not #9). `0x1001` (mask 0x1,
+core 0 only) was woken onto the contended event's critical section (word
+`0x40001001` — owner `0x1001` with waiters) and waited in `core_take` for the whole
+2.6 s gap while `0x1002` held core 0 and spun `0x1D` 11,095,006 times (boot1;
+11,108,312 in boot2). `0x1003`/`0x1004` queued behind the starved main thread's
+critical section; the main thread never submitted.
+
+**Fix and verification.** `core_take` marks `yield_eq` for equal-priority co-core
+owners; `runtime_core_checkpoint` (SVC entry) rotates once the holder has run
+`core_slice_ns` (4 ms); higher-priority preemption is unchanged. boot3: 90 s, zero
+present stops, `timing to frame 2400`, p50 33.33 ms; boot4 (30 s): frame 600, zero
+stops. Prior record: stops at 354–677. Commits `0c4e0b9` (diagnostics) and
+`d8a90e4` (rotation). Gate: 255 tests, 1 skipped, exit 0. Boundary (one file,
+`games/nfs/runtime/threads.c`): linkage clear (libc/pthread/Mach and the tree's own
+helpers), paths clear. S2.10 is promoted.
