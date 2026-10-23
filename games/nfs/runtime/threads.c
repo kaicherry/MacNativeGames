@@ -29,6 +29,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <mach/mach.h>
+#include "mach_vm_compat.h"
 #include <pthread/qos.h>
 #include <dlfcn.h>
 
@@ -113,17 +114,91 @@ static void wait_unlink(thr_t *t) {
 #define CTRACE_MAX 16384
 #define CTRACE_DUMP 4096                // entries printed per dump: ~18 s of stuck churn, or ~4 s of healthy churn
 #define CTRACE_COALESCE_NS 2000000ULL   // one entry per thread+key per window: a signal storm must not flush the ring
-struct ctrace_ent { uint64_t ns; uint64_t key; uint32_t kind, h, woke; };
+struct ctrace_ent { uint64_t ns; uint64_t key; uint32_t kind, h, woke, count, holder; };
 static struct ctrace_ent g_ctrace[CTRACE_MAX];
 static unsigned g_ctrace_w;
-static void ctrace_push(uint32_t kind, uint32_t h, uint64_t key, uint32_t woke) {
+#define SEM_NO_COUNT 0xffffffffu   // the event's key is not a semaphore cv, so it carries no credit count and no owner
+// What one semaphore event observes: the credit count and the tag of whoever holds the semaphore's critical section at
+// that instant. holder names a take in flight — a fast Acquire or a TryAcquire holds the cs word across its decrement.
+struct sem_obs { uint32_t count, holder; };
+static void ctrace_push(uint32_t kind, uint32_t h, uint64_t key, uint32_t woke, struct sem_obs o) {
     uint64_t now = now_ns();
     if (g_ctrace_w) {
         struct ctrace_ent *last = &g_ctrace[(g_ctrace_w - 1) % CTRACE_MAX];
-        if (last->kind == kind && last->h == h && last->key == key && now - last->ns < CTRACE_COALESCE_NS) { last->ns = now; last->woke = woke; return; }
+        // A repeated wait on the same key must not fold away when a credit moved between them: the count is the record.
+        if (last->kind == kind && last->h == h && last->key == key && last->count == o.count && now - last->ns < CTRACE_COALESCE_NS) { last->ns = now; last->woke = woke; last->holder = o.holder; return; }
     }
     struct ctrace_ent *e = &g_ctrace[g_ctrace_w++ % CTRACE_MAX];
-    e->ns = now; e->kind = kind; e->h = h; e->key = key; e->woke = woke;
+    e->ns = now; e->kind = kind; e->h = h; e->key = key; e->woke = woke; e->count = o.count; e->holder = o.holder;
+}
+
+// ---------- 完成信用的台账 | The completion-credit ledger ----------
+// An nn::os::Semaphore is a count under a critical section: cs at B+0x1c, count at B+0x14, max (0x7fffffff) at B+0x18,
+// cv at B+0x20. Acquire and TryAcquire decrement that count inside the cs; Release increments it and signals the cv in
+// the same cs. Acquire's fast path and TryAcquire issue no SVC of their own, so this reads the count and the cs word at
+// every condition wait/signal and every contested lock enter/leave, and one row per semaphore keeps who released a
+// credit (the cv signal), who waited for one, who contested the cs, and how many wakes were followed by a re-wait with
+// no release between them. That last counter is not a lost-credit count: a take that succeeds leaves no event either,
+// so it fires on the healthy loop and must not be read as the fault.
+#define SEM_ROW_MAX 64
+#define SEM_BY_MAX 8
+enum { SEM_ENTER = 0, SEM_LEAVE = 1, SEM_RELEASE = 2, SEM_ACQUIRE = 3 };
+struct sem_by { uint32_t h, rel, acq, enter; };
+struct sem_row { uint64_t base, dec_ns, rel_ns; struct sem_by by[SEM_BY_MAX]; int nby;
+                 uint32_t count, at_enter, entered, dec, dec_delta, rel, rel_delta, rel_n, acq_n, enter_n, wake, wake_rel, rewait, unattributed; };
+static struct sem_row g_sem[SEM_ROW_MAX];
+static int g_sem_n;
+
+static struct sem_by *sem_by(struct sem_row *r, uint32_t h) {
+    for (int i = 0; i < r->nby; i++) if (r->by[i].h == h) return &r->by[i];
+    if (r->nby >= SEM_BY_MAX) return NULL;
+    struct sem_by *b = &r->by[r->nby++]; *b = (struct sem_by){0}; b->h = h; return b;
+}
+
+// Read a semaphore's count and its critical-section word (the owner tag, with the waiters bit masked off) behind a cv
+// key (key = B+0x20) or an ArbitrateLock/UnlockLock address (addr = B+0x1c). Through the host mapping so a condition
+// variable that is not a semaphore returns "no count" instead of faulting: every cv in the game reaches this, and the
+// max word is what tells a semaphore from the rest.
+static struct sem_obs sem_obs_of(uint64_t probe, int is_key) {
+    struct sem_obs o = { SEM_NO_COUNT, 0 };
+    uint64_t base = probe - (is_key ? 0x20 : 0x1c);
+    uint32_t maybe_max = 0, v = 0; mach_vm_size_t got = 0;
+    if (mach_vm_read_overwrite(mach_task_self(), base + 0x18, 4, (mach_vm_address_t)(uintptr_t)&maybe_max, &got) != KERN_SUCCESS || got != 4) return o;
+    if (maybe_max != 0x7fffffffu) return o;
+    if (mach_vm_read_overwrite(mach_task_self(), base + 0x14, 4, (mach_vm_address_t)(uintptr_t)&v, &got) != KERN_SUCCESS || got != 4) return o;
+    o.count = v;
+    if (mach_vm_read_overwrite(mach_task_self(), base + 0x1c, 4, (mach_vm_address_t)(uintptr_t)&v, &got) == KERN_SUCCESS && got == 4) o.holder = v & 0xbfffffffu;
+    return o;
+}
+
+static struct sem_row *sem_row(uint64_t base) {
+    for (int i = 0; i < g_sem_n; i++) if (g_sem[i].base == base) return &g_sem[i];
+    if (g_sem_n >= SEM_ROW_MAX) return NULL;
+    struct sem_row *r = &g_sem[g_sem_n++]; *r = (struct sem_row){0}; r->base = base; return r;
+}
+
+// Record what one semaphore SVC observed. `woke` is the handle a 0x1D handed a credit to; the wake/re-wait pair it
+// feeds is recorded for the dump, and is not by itself evidence of a lost credit (see the ledger note above).
+static struct sem_obs sem_note(uint64_t probe, int is_key, uint32_t h, int kind, uint32_t woke) {
+    struct sem_obs o = sem_obs_of(probe, is_key);
+    if (o.count == SEM_NO_COUNT) return o;
+    struct sem_row *r = sem_row(probe - (is_key ? 0x20 : 0x1c));
+    if (!r) return o;
+    struct sem_by *b = sem_by(r, h);
+    switch (kind) {
+    case SEM_ENTER:   r->at_enter = o.count; r->entered = 1; r->enter_n++; if (b) b->enter++; break;
+    // Only a Leave with its own Enter could have moved the count: a Leave whose Enter took the user-mode fast path
+    // carries no before-count, and attributing its drop to the leaving thread would invent a take.
+    case SEM_LEAVE:   if (r->entered && r->at_enter > o.count) { r->dec = h; r->dec_delta = r->at_enter - o.count; r->dec_ns = now_ns(); } r->entered = 0; break;
+    case SEM_RELEASE: r->rel = h; r->rel_ns = now_ns(); r->rel_n++; if (o.count > r->count) r->rel_delta = o.count - r->count;
+                      r->wake = woke; r->wake_rel = r->rel_n; if (b) b->rel++; break;
+    case SEM_ACQUIRE: r->acq_n++; if (b) b->acq++;
+                      if (r->wake == h && r->wake_rel == r->rel_n) r->rewait++;   // woken for a credit, waited again, no release since
+                      r->wake = 0;
+                      if (r->count > o.count) r->unattributed += r->count - o.count; break;
+    }
+    r->count = o.count;
+    return o;
 }
 // 按内核顺序挑等待者：优先级数值小者优先，同优先级先登记者优先（持 G）。kind 1 按锁地址、2 按条件键、3 按地址匹配
 // Pick a waiter in kernel order: numerically lower priority first, at equal priority the earlier registered first (holding G). kind 1 matches by lock address, 2 by condition key, 3 by address
@@ -449,12 +524,13 @@ int svc_thread(int num, uint64_t *regs) {
     case 0x1A: {  // ArbitrateLock(w0 持有者句柄, x1 地址, w2 本线程标签) | ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)
         thr_t *t = cur(); uint64_t addr = regs[1];
         pthread_mutex_lock(&G);
+        sem_note(addr, 0, t->handle, SEM_ENTER, 0);   // entering the cs: the count before this critical section
         int64_t r = 0;
         if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2]; r = block(t, 1, -1); }
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
     }
-    case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
+    case 0x1B: pthread_mutex_lock(&G); sem_note(regs[0], 0, cur()->handle, SEM_LEAVE, 0); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 锁地址, x1 条件键, w2 标签, x3 超时) | WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
         pthread_mutex_lock(&G);
@@ -480,9 +556,9 @@ int svc_thread(int num, uint64_t *regs) {
         st32(key, 1);
         t->wkey = key; t->waddr = addr; t->wtag = (uint32_t)regs[2];
 #endif
-        ctrace_push(0, t->handle, key, (uint32_t)regs[2]);
+        ctrace_push(0, t->handle, key, (uint32_t)regs[2], sem_note(key, 1, t->handle, SEM_ACQUIRE, 0));
         int64_t r = block(t, 2, (int64_t)regs[3]);   // 超时：不重新拿锁（用户态自己拿） | Timeout: the lock is not re-acquired (user mode takes it itself)
-        if (r == R_TIMEOUT) ctrace_push(2, t->handle, key, 0);
+        if (r == R_TIMEOUT) ctrace_push(2, t->handle, key, 0, (struct sem_obs){SEM_NO_COUNT, 0});
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
     }
@@ -491,7 +567,7 @@ int svc_thread(int num, uint64_t *regs) {
         pthread_mutex_lock(&G);
         uint32_t woke = 0;
         for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) { if (!woke) woke = w->wtag; lock_acquire_for(w, w->waddr, w->wtag); }   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
-        ctrace_push(1, cur()->handle, key, woke);
+        ctrace_push(1, cur()->handle, key, woke, sem_note(key, 1, cur()->handle, SEM_RELEASE, woke));
         int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
         if (!left) st32(key, 0);
         pthread_mutex_unlock(&G);
@@ -775,12 +851,30 @@ static void dump_threads(unsigned secs) {
     }
     if (g_ctrace_w) {
         unsigned n = g_ctrace_w < CTRACE_DUMP ? g_ctrace_w : CTRACE_DUMP, first = g_ctrace_w - n;
-        fprintf(stderr, "[cond-trace] last %u condition events (0=wait 1=signal 2=timeout):\n", n);
+        fprintf(stderr, "[cond-trace] last %u condition events (0=wait 1=signal 2=timeout; count= is the semaphore's credit count at the event, holder= is who owns its cs):\n", n);
         for (unsigned i = first; i < g_ctrace_w; i++) {
             struct ctrace_ent *e = &g_ctrace[i % CTRACE_MAX];
             const char *k = e->kind == 0 ? "wait" : e->kind == 1 ? "signal" : "timeout";
-            fprintf(stderr, "[cond-trace]   -%.1f ms %s key=%#llx by=%#x woke=%#x\n",
-                    (now_ns() - e->ns) / 1e6, k, (unsigned long long)e->key, e->h, e->woke);
+            if (e->count == SEM_NO_COUNT)
+                fprintf(stderr, "[cond-trace]   -%.1f ms %s key=%#llx by=%#x woke=%#x\n",
+                        (now_ns() - e->ns) / 1e6, k, (unsigned long long)e->key, e->h, e->woke);
+            else
+                fprintf(stderr, "[cond-trace]   -%.1f ms %s key=%#llx by=%#x woke=%#x count=%u holder=%#x\n",
+                        (now_ns() - e->ns) / 1e6, k, (unsigned long long)e->key, e->h, e->woke, e->count, e->holder);
+        }
+    }
+    if (g_sem_n) {   // credits returned, credits waited for, cs contenders, wake/re-wait pairs (not a lost-credit count)
+        fprintf(stderr, "[sem-trace] credit ledger (rewait = woken for a credit then waited again with no release since; unattributed = takes no observation named):\n");
+        for (int i = 0; i < g_sem_n; i++) {
+            struct sem_row *r = &g_sem[i];
+            if (!r->acq_n && !r->rel_n && !r->enter_n) continue;   // a cv that no semaphore op ever reached carries nothing
+            struct sem_obs lo = sem_obs_of(r->base + 0x20, 1);
+            uint32_t live = lo.count == SEM_NO_COUNT ? r->count : lo.count;
+            fprintf(stderr, "[sem-trace] base=%#llx key=%#llx count=%u acq=%u rel=%u enters=%u rewait=%u unattributed=%u last_rel=%#x x%u last_dec=%#x x%u\n",
+                    (unsigned long long)r->base, (unsigned long long)(r->base + 0x20), live, r->acq_n, r->rel_n, r->enter_n,
+                    r->rewait, r->unattributed, r->rel, r->rel_delta, r->dec, r->dec_delta);
+            for (int j = 0; j < r->nby; j++)
+                fprintf(stderr, "[sem-trace]   by=%#x rel=%u acq=%u enter=%u\n", r->by[j].h, r->by[j].rel, r->by[j].acq, r->by[j].enter);
         }
     }
     { uint64_t done[16]; int ndone = 0;

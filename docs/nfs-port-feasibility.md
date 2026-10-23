@@ -1174,3 +1174,72 @@ lateness, not from the dump.
   and not evidence.
 
 The missing instrument is the completion semaphores' credit accounting. S2.14 is promoted.
+
+## S2.14 — Account the frame-completion semaphores' credits (2026-10-23)
+
+The frame-completion credit question S2.13 left open is answered by a ledger built inside the runtime's
+condition trace. On a quiet machine, with the instrument in place, 13 clean bounded 65 s headless boots
+(r1–r13 of a 20-run batch stopped on operator instruction) each ended on the timer, reported `stops=0` and
+`badcmd=0`, and their t=62 s `[shot]` frames are 1851–1855 against S2.13's uninstrumented 1651–1853; the 14th
+run was killed mid-boot and set aside in `.babysteps/scratch/S2.14-credit-trace/partial/`. Schedule unchanged
+from S2.12/S2.13 (no presses).
+
+**The instrument (no behaviour change).** `games/nfs/runtime/threads.c` only, 104 insertions / 11 deletions:
+`ctrace_push` carries a `struct sem_obs { count, holder }` read at every condition wait/signal and every
+contested lock enter/leave, where `holder` is the tag in the semaphore's own critical-section word (cs = cv − 4);
+coalescing no longer folds a repeat on the same key when the count moved, so a re-wait survives it; and one
+ledger row per `nn::os::Semaphore` (identified by `max == 0x7fffffff` at base+0x18, base = cv − 0x20; count at
+base+0x14) keeps per-thread `rel` (cv signals = credits returned), `acq` (blocking acquires), `enter` (contested
+cs entries) and totals, printed as `[sem-trace]` rows with `by=` lines. `holder=` rides on the `[cond-trace]`
+lines; `summary.py` reads the rows.
+
+**The account closes — the slice's result.** Over the 13 clean runs, on each of the three completion semaphores:
+`rel − acq` equals `0x1001`'s own `rel` (off by at most 1), `acq` equals the three frame workers' `rel` (off by
+at most 1), the workers' own `acq` is 0, and `count` is 0 or 1 — 3 keys × 13 runs. r1 `…b18`: rel 11845 / acq
+7026 / `0x1001` 4819 rel, 7026 acq / workers 7026 rel, 0 acq. r13 `…b18`: 12430 / 7302 / 5128 / 7302 / 0.
+r1 `…d58`: 1577 / 1564 / 13 / 1564 / 0. r1 `…b28`: 2369 / 2360 / 9 / 2360 / 0.
+
+**What the take is, and the withdrawn hypothesis.** The credits `0x1001` posts (`ReleaseSemaphore` with
+`woke=0` — the host found no cv waiter) leave the semaphore again with no blocking acquire, which is what a
+fast-path `AcquireSemaphore` or a `TryAcquireSemaphore` (`sdk+0x33b940`: `cs.Enter(); count--; cs.Leave()`) does.
+That path issues no SVC, so the take is recorded only as a count: the SDK's
+`InternalCriticalSectionImplByHorizon::Enter`/`Leave` (`sdk+0x344520`/`0x344610`) are user-mode `ldaxr/stlxr` and
+reach `svc #0x1A`/`0x1B` only with the `0x40000000` waiters bit, so the ledger's sound cross-critical-section
+attribution (`last_dec`, set only when an Enter/Leave pair bounds the drop) has to be read for these keys before
+the thread can be named. S2.13's "a worker must therefore be taking those credits through `TryAcquireSemaphore`"
+is withdrawn: the surplus equals `0x1001`'s own releases and the workers' releases equal `0x1001`'s blocking
+acquires, so nothing was taken by a third party.
+
+**Two metrics withdrawn as non-discriminating.** `rewait` and `unattributed` both read at or near every
+blocking acquire on every completion key (r1 `…b18` rewait 2295 / unattributed 6533 of 7026; `…b28` 2351 / 2145
+of 2360; `…d58` 1550 / 1562 of 1564); both fire on the healthy loop, because a take that succeeds also leaves no
+event. They stay in the instrument and must not be read as a lost credit (Do-Not #13).
+
+**A discarded batch.** An earlier 20-boot instrumented batch (7 stopped: r6 48.8 s / frame 1211, r8 44.1 / 1215,
+r9 55.4 / 1545, r12 19.4 / 490, r14 28.4 / 755, r17 32.9 / 763, r18 23.3 / 599; shot frames 1375–1803) ran while
+another local process held the GPU, as did three smoke boots (one stopped, 19.6 s / frame 480). It is kept at
+`.babysteps/scratch/S2.14-credit-trace/gpu-contended/` and named as discarded: its stop rate and frame counts are
+the other process's, not this build's (Do-Not #14). The instrument cost no frames on the quiet machine — 1851–1855
+against the uninstrumented 1651–1853 — but the instrument's effect on the stop rate is unmeasured and no claim is
+made about it.
+
+**No fix is made, and the closes-when is not met.** The consumer is bounded — a fast-path acquire on a completion
+semaphore, on `0x1001`'s own side — but not named by thread, because the SDK gives that path no event; there is no
+defect site to fix. The instrumenting commit is the slice's only code change; the closes-when is not met. Not the
+S2.9 shape: all three cores read `owner 0`, no `core waiter` line (`g_core_wait` empty), every waiting thread
+`wkind=2` with the cs word 0, no lock waiters.
+
+### Gate, boundary, scratch
+
+- Gate GREEN: `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passed
+  255 tests in 22.562 s, 1 skipped, exit 0 (`.babysteps/scratch/S2.14-credit-trace/gate.log`), on the same quiet
+  machine.
+- Boundary (scope: this slice's diff against HEAD — one file, `games/nfs/runtime/threads.c`, 104 insertions /
+  11 deletions): linkage clear — the one added include resolves inside this tree
+  (`games/nfs/third_party/d2r_gfx/gfx/nvn/include/mach_vm_compat.h`, a header the file already included mid-file),
+  and no call, import or resolve in the diff reaches `games/totk` or `games/by3`; paths clear — the diff adds no
+  path literal and names neither tree.
+- Scratch: `.babysteps/scratch/S2.14-credit-trace/{run.sh,probe.sh,summary.py,probe-summary.txt,r1..r13.input,.emit,.log,.stdout,r1..r13-end.png,gate.log}`
+  is evidence; `partial/` holds the 14th, killed mid-boot; `gpu-contended/` holds the discarded batch and is named
+  as discarded, not evidence. The 7.2 GB work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is
+  re-derivable and not evidence.

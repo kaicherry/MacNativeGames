@@ -1,63 +1,86 @@
 ---
-slice: S2.14
+slice: S2.15
 stateFile: docs/STATE.md
-donotCount: 12
-seededFrom: 1248923
+donotCount: 14
+seededFrom: 956cc51
 ---
 
-# Next slice — S2.14: account the frame-completion semaphores' credits
+# Next slice — S2.15: Name the thread that takes the credit `0x1001` posts
 
 ## The next action — verbatim
 
-S2.14 — Account the frame-completion semaphores' credits. S2.13 caught the stop's transition for the first time (r17, 59.7 s, frame 1706; 1 of 20 bounded 65 s boots) and replaced the lost-wakeup hypothesis with a measured one: main `0x1001` kicked all three frame workers (`signal key=0x78f284e828 by=0x1001 woke=0x1003`, `signal key=0x78f284e7a8 by=0x1001 woke=0x1004`, `signal key=0x78f284e8a8 by=0x1001 woke=0x1002`), parked untimed (`x3=0xffffffffffffffff`) on `addr=0x16bc68b14 key=0x16bc68b18`, and nothing touched that key again — the ring's remaining 562 entries (2.58 s) are only the four workers' `TimedWaitEvent` timeout+wait cycles. Each worker was woken by main's kick and went straight back to its own `TimedWaitEvent`, producing no completion at all. The object is an `nn::os::Semaphore` (base `0x16bc68af8`: `[+0x10]=1`, `[+0x14]=count=0`, `[+0x18]=max=0x7fffffff`, cs word 0, cv word 1) reached through `nn::os::AcquireSemaphore` (`sdk+0x33b8e0`; stack `sdk+0x33b918 <- sdk+0x55c0fc <- main+0x743c10`), whose count is read and decremented under the same critical section that `ReleaseSemaphore` (`sdk+0x33ba80`) increments it in — so a release cannot be lost, and the workers are awake and polling rather than blocked (`main+0x756e64` discards `TimedWaitEvent`'s result). Over the 3.9 s ring only `0x1001` ever waits on a completion key (240 waits on `0x16bc68b18`) while only the workers signal it (240 signals: `0x1002` x70, `0x1003` x89, `0x1004` x81), and `0x1001` also signals it 173 times with `woke=0`; a worker must therefore be taking those credits through `TryAcquireSemaphore` (`sdk+0x33b940`), which issues no SVC and so leaves no trace. Record that trace — the count at every `ReleaseSemaphore`/`TryAcquireSemaphore`/`AcquireSemaphore` on the completion semaphores, and in the stall dump which thread last decremented each one — and name the consumer that took a credit and returned none, from the widened ring's transition (`.babysteps/scratch/S2.13-missing-wakeup/r17.log`, third dump, ring spanning `-3938.0` to `0 ms`; worker loop `main+0x756e64`; `games/nfs/runtime/threads.c`); instrument before changing behaviour and fix only from the named cause — do not weaken the S2.9 equal-priority rotation (Do-Not #9), and do not change `core_slice_ns` or `runtime_core_checkpoint` unless the named cause is one of them; every claim tied to a recorded observation; no gameplay claim and no visual-correctness claim.
+S2.15 — Name the thread that takes the credit `0x1001` posts on the frame-completion semaphores. S2.14 built the
+credit ledger and the account now closes on 13 clean 65 s boots (r1–r13, zero stops): on each of the three
+completion semaphores the surplus of releases over blocking acquires equals `0x1001`'s own releases, `0x1001`'s
+blocking acquires equal the three frame workers' releases, and the workers' own acquires are zero (3 keys × 13
+runs, all off by at most 1). So no credit is taken by a third party: `0x1001` itself posts a credit
+(`ReleaseSemaphore`, `woke=0` — the host found no cv waiter) and the credit leaves again with no blocking acquire,
+which is what a fast-path `AcquireSemaphore` or a `TryAcquireSemaphore` (`sdk+0x33b940`: `cs.Enter(); count--;
+cs.Leave()`) does — and that path issues no SVC, so the host recorded the take only as a count. The ledger's
+sound cross-critical-section attribution (`last_dec`, set only when a 0x1A/0x1B pair bounds the drop) must be read
+for these keys in a stopped run and reported; if it stays 0 there, only one route is left — make the guest's
+acquire fast path visible (the `games/nfs/third_party/d2r` rewriter, or `runtime_game_patches(Module *)`'s hook,
+extended to the `sdk` module) — and name the thread that leaves the semaphore's critical-section word with the
+count lower. Instrument before changing behaviour; do not weaken the S2.9 equal-priority rotation (Do-Not #9);
+do not touch `games/totk` or `games/by3`.
 
-S2.14 closes when the credit consumer is named from a recorded observation (a trace, or SDK/game code read against the record), a fix is made, and bounded headless boots with `TOTK_PRESENT_WATCHDOG=2500` present through the stop's window (39.7–59.7 s across the post-fix runs) and past it with zero stops across N runs, each with its bound and frame count; or the first probe fails with its own message and the command that produced it.
+S2.15 closes when the thread that takes the posted credit is named from a recorded observation (the fast path made
+visible, or `last_dec` on these keys), and either that names a defect site and a fix follows with bounded headless
+boots that present through the stop's window and past it with zero stops across N runs, each with its bound and
+frame count; or the probe fails with its own message and the command that produced it.
 
 ## What is settled — do not re-derive
 
-- **The transition, captured for the first time.** r17's third dump (the watchdog at 59.7 s) has a ring spanning `-3938.0 ms` to `0 ms`; its last events on the completion key are `-2579.7 ms signal key=0x78f284e828 by=0x1001 woke=0x1003`, `… key=0x78f284e7a8 by=0x1001 woke=0x1004`, `… key=0x78f284e8a8 by=0x1001 woke=0x1002` and `-2579.7 ms wait key=0x16bc68b18 by=0x1001`. Nothing touches `0x16bc68b18` again; the remaining 562 entries (2.55 s) are the four workers' `timeout`+`wait` cycles (~33 ms each) on their own keys.
-- **Counts over the 3.9 s ring.** `0x1001` 1256 signal / 364 wait; `0x1002` 160/467/70; `0x1003` 228/493/69; `0x1004` 210/493/70; `0x1005` 108 wait / 108 timeout. Per completion key: `0x16bc68b18` 240 waits by `0x1001` against 240 worker signals (`0x1002` x70, `0x1003` x89, `0x1004` x81) plus 173 `woke=0` signals by `0x1001`; `0x16bc68b28` 83/83; `0x16bc68d58` 41/41. Only `0x1001` waits on a completion key; the workers only signal it.
-- **The object is a semaphore, not a stateless cv.** Base `0x16bc68af8` reads `[+0x10]=1`, `[+0x12]=0`, `[+0x14]=count=0`, `[+0x18]=max=0x7fffffff`, cs `0`, cv word `1`; reached via `nn::os::AcquireSemaphore` (`sdk+0x33b8e0`; stack `sdk+0xd884dc <- sdk+0x33b918 <- sdk+0x55c0fc <- main+0x743c10`). S2.12's r4 decodes the same (`0x16b3f4888`).
-- **A release cannot be lost.** `AcquireSemaphore` is `cs.Enter(); while (count == 0) cv.Wait(cs); count--; cs.Leave()`; `ReleaseSemaphore` (`sdk+0x33ba80`) is `cs.Enter(); count++; cv.Signal(); cs.Leave()`. The count is the state, touched under one critical section, so the missing event is a release that was never issued.
-- **The workers are awake and polling.** Woken by main's kick (`woke=0x1003`/`0x1004`/`0x1002`), each went straight back to its own `TimedWaitEvent` with no completion; `main+0x756e64` overwrites `TimedWaitEvent`'s result in `w0`, so the body re-runs every ~33 ms (`x3 ≈ 0x1f78a0b` ns) regardless of signal.
-- **The SDK protocol, read against the record.** `Signal()` (`sdk+0x343f20`) is `orr w1, wzr, #0x1; b <svc #0x1D>` — unconditional, no user-mode key read; `Wait`/`TimedWait` (`sdk+0x343f40`/`0x343fe0`) issue `svc #0x1C`; `Enter`/`Leave` (`sdk+0x344520`/`0x344610`) are user-mode `ldaxr/stlxr` reaching `svc #0x1A`/`0x1B` only on the `0x40000000` waiters bit. The `0x1C` case comment's stated reason (the SDK reads the condition key in user mode) does not describe this title's SDK.
-- **Not the S2.9 shape.** All three cores `owner 0`; no `core waiter` line (`g_core_wait` empty); every waiting thread `wkind=2` with cs word `0`, cv word `1`; no lock waiters. The S2.9 rotation is untouched (Do-Not #9).
+- **The account closes, and it is the slice's result.** Per completion key, over 13 clean runs: `rel − acq` = `0x1001`'s own `rel` (off by at most 1), `acq` = the three workers' `rel` (off by at most 1), workers' `acq` = 0, and `count` = 0 or 1. r1 `…b18`: rel 11845 / acq 7026 / `0x1001` 4819 rel, 7026 acq / workers 7026 rel, 0 acq. r13 `…b18`: 12430 / 7302 / 5128 / 7302 / 0. r1 `…d58`: 1577 / 1564 / 13 / 1564 / 0. r1 `…b28`: 2369 / 2360 / 9 / 2360 / 0.
+- **The three completion semaphores per run** (ASLR moves the high bits; these are the low-bit pattern): base `…af8` / cv `…b18`, base `…b08` / cv `…b28`, base `…d38` / cv `…d58`. Base = cv − 0x20, count at base+0x14, max at base+0x18, cs word at base+0x1c (= cv − 4), cv at base+0x20. `nn::os::Semaphore` is identified by `max == 0x7fffffff`; do not hardcode addresses.
+- **The instrument (no behaviour change).** `games/nfs/runtime/threads.c`: `ctrace_push` carries `struct sem_obs { count, holder }` read at every 0x1C/0x1D on a cv and every 0x1A/0x1B on a contested cs; `holder` is the tag in the cs word; coalescing no longer folds a repeat on the same key when the count moved (a re-wait must survive); and one ledger row per semaphore with per-thread `rel` (cv signals), `acq` (blocking acquires), `enter` (contested cs entries), plus totals, printed as `[sem-trace]` rows with `by=` lines.
+- **`0x1001` both waits and posts.** `0x1001`: rel 4819 / acq 7026 on `…b18` in r1 — it blocks for every completion and also returns credits with `woke=0`. The workers `0x1002`/`0x1003`/`0x1004` never block on a completion key and only release; `0x1005` polls its own key.
+- **The take leaves no event.** SDK `AcquireSemaphore` (`sdk+0x33b8e0`) fast path and `TryAcquireSemaphore` (`sdk+0x33b940`) issue no SVC; `InternalCriticalSectionImplByHorizon::Enter`/`Leave` (`sdk+0x344520`/`0x344610`) are user-mode `ldaxr/stlxr` and reach `svc #0x1A`/`0x1B` only with the `0x40000000` waiters bit. So the count is the take's only trace.
+- **Rate, measured clean.** With the instrument in place and the machine quiet: 13 bounded 65 s boots, **0 stops**, t=62 s `[shot]` frames 1851–1855 (`.babysteps/scratch/S2.14-credit-trace/probe-summary.txt`). S2.13's uninstrumented sample: 1 stop in 20, frames 1651–1853. The instrument's effect on the rate is **unmeasured** — do not claim one.
+- **The stop's own record is unchanged and is S2.13's** (uninstrumented r17): `present stop: last presented frame 1706 ... (59.7 s since start)`; main kicks all three frame workers on their own keys and parks untimed on `addr=0x16bc68b14 key=0x16bc68b18`; nothing touches that key again; the workers were woken and each went straight back to its own `TimedWaitEvent` (`main+0x756e64` discards its result) producing no completion.
+- **Not the S2.9 shape.** All three cores `owner 0`; no `core waiter` line; every waiter `wkind=2`; no lock waiters. The rotation is untouched.
+- **Gate.** `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 255 tests, 1 skipped, exit 0, 22.562 s today.
 
 ## Withdrawn — proven wrong, do not use
 
-- **"No signal event appears in r4's rings" as evidence about the missing wakeup.** Withdrawn: the ring was 0.6 s while the transition sits 2.6 s before the dump (Do-Not #12).
-- **"The present stop is a lost wakeup/condition race" for this stop.** Withdrawn: the object is a count-based semaphore, so a release cannot be lost.
-- **"The workers stop being woken" / "the workers are parked".** Withdrawn: main's kick woke all three (`woke=0x1003`/`0x1004`/`0x1002`); the workers are awake and polling.
-- Numbers **2, 3, 4, 5** — unchanged; number **1** is **12** now. Prior record numbers (8 shaders, frame 441, p50 33.33 ms, GPU p50 0.86–1.45 ms, 255 tests, 721 strings, S2.12 end frames 1759/1781/1801/1851/1856/1851/1802) are history, not re-derived.
+- **"A worker must be taking those credits through `TryAcquireSemaphore`" (S2.13's hypothesis, and S2.14's board).** Withdrawn by the account above: the surplus equals `0x1001`'s own releases and the workers' releases equal `0x1001`'s blocking acquires, so nothing was taken by a third party.
+- **"The credit trace is a load: it raised the stop rate from 1/20 to 7/20 and cost ~20% of the frames."** Withdrawn — that batch ran while another local process held the GPU (Do-Not #14). Clean: 0 stops in 13, frames 1851–1855 against the uninstrumented 1651–1853.
+- **`rewait` and `unattributed` as evidence of a lost credit.** Withdrawn: both fire on the healthy loop (r1 `…b18` 2295 / 6533 of 7026 blocking acquires; `…d58` 1550 / 1562 of 1564). Keep them recorded; do not read them as the fault (Do-Not #13).
+- Still withdrawn from S2.13: "no signal event appears in r4's rings" (0.6 s ring, Do-Not #12); "the present stop is a lost wakeup/condition race"; "the workers stop being woken" / "the workers are parked".
+- Numbers **1** is **14** now; **8, 9, 10, 11** unchanged. Prior record numbers (8 shaders, frame 441, p50 33.33 ms, 255 tests, 721 strings, S2.13's r17 59.7 s / frame 1706) are history, not re-derived. The discarded GPU-contended batch's 7 stops (r6 48.8 s / 1211, r8 44.1 / 1215, r9 55.4 / 1545, r12 19.4 / 490, r14 28.4 / 755, r17 32.9 / 763, r18 23.3 / 599) and its smoke's stop (19.6 s / 480) are **not** usable numbers.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| Account the credits | `games/nfs/runtime/threads.c` and the stall dump — the count at every `ReleaseSemaphore`/`TryAcquireSemaphore`/`AcquireSemaphore` on the completion semaphores (`0x16bc68b18`, `0x16bc68b28`, `0x16bc68d58`), and in the dump which thread last decremented each one. |
-| Instrument | Only to record the credit consumer; no behaviour change in the instrumenting commit. |
-| Fix + verify | The smallest change at the named cause, verified by bounded boots with `TOTK_PRESENT_WATCHDOG=2500` presenting past 59.7 s with zero stops. |
-| Do not | Do not weaken the S2.9 equal-priority rotation; do not change `core_slice_ns` or `runtime_core_checkpoint` unless the named cause is one of them; do not touch `games/totk` or `games/by3`. |
+| Read `last_dec` for the completion keys | `games/nfs/runtime/threads.c` — print `last_dec`/`last_dec_delta` per ledger row and read them in a stopped run (`.babysteps/scratch/S2.14-credit-trace/summary.py` reads the rows already). |
+| Make the take visible if `last_dec` stays 0 | The guest acquire fast path: `games/nfs/third_party/d2r/` (the rewriter) or `runtime_game_patches(Module *)` in `games/nfs/runtime/`, extended to the `sdk` module's `AcquireSemaphore`/`TryAcquireSemaphore` entries. |
+| Read the producer against the record | `main+0x756e64` (the worker loop) and its path to the completion `ReleaseSemaphore` — does the body reach a completion when it runs? `main.elf` is at `…/nfs-work/nfs/extracted/nfs100/elf/`. |
+| Do not | Do not weaken the S2.9 equal-priority rotation; do not change `core_slice_ns` or `runtime_core_checkpoint` unless the named cause is one of them; do not touch `games/totk` or `games/by3`; no behaviour change in the instrumenting commit. |
 
 ## Read these first, and only these
 
-- `.babysteps/scratch/S2.13-missing-wakeup/r17.log` — the stopped run: the widened ring's transition at the third dump (the last events on `0x16bc68b18` at `-2579.7 ms`), the thread dump, and the `cond-mem` block for `0x16bc68af8`.
-- `.babysteps/scratch/S2.13-missing-wakeup/sdk-sem.dis` (`AcquireSemaphore`/`ReleaseSemaphore`), `sdk-icv.dis` (`Signal`/`Wait`/`TimedWait`), `sdk-ics.dis` (`Enter`/`Leave`).
-- `docs/donot.md` #8, #9, #10, #11, #12.
+- `.babysteps/scratch/S2.14-credit-trace/probe-summary.txt`, one stopped-free run's `[sem-trace]` block and `[cond-trace]` tail (e.g. `r1.log`), and `summary.py` — the ledger reader.
+- `.babysteps/scratch/S2.13-missing-wakeup/{r17.log,main-756e64.dis,sdk-sem.dis,sdk-ics.dis}` — the stop's transition, the worker loop, and the semaphore/critical-section disassembly.
+- `docs/donot.md` #8, #9, #10, #11, #12, #13, #14.
 
-## Do-Not entries that apply here (5 of 12)
+## Do-Not entries that apply here (7 of 14)
 
-- #8 — **Do not name a stall by the frame one run happened to stop at.** Report the range and the runs.
-- #9 — **Do not model a virtual core without rotating equal-priority threads.** Every core read `owner 0` here, so this is not the mechanism — but it must not be weakened while looking.
-- #10 — **Do not rest a probe's attribution on a separate control run.** A control that dies before the comparison window is not a control.
-- #11 — **Do not close a slice by appending its record while the STATE.md top sections still name the finished slice.** Advance `Where the work is`, `Next action` + gate + closes-when + Do-Not count, `Completed`, `In progress` and `Queued` in the same commit as the record.
-- #12 — **Do not size a stall's trace window from the dump.** Size it from the stop's own lateness — the dump lands 2.6 s after the stop begins.
+- #8 — do not name a stall by the frame one run happened to stop at; report the range and the runs.
+- #9 — do not model a virtual core without rotating equal-priority threads.
+- #10 — do not rest a probe's attribution on a separate control run.
+- #11 — do not close a slice by appending its record while the STATE.md top sections still name the finished slice.
+- #12 — do not size a stall's trace window from the dump.
+- #13 — do not read a counter that fires on the healthy path as evidence of the fault.
+- #14 — do not read a stop rate or frame count taken while another local process held the GPU as a property of the build.
 
 ## The gate
 
 - `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passes (255 tests, 1 skipped, exit 0 today).
-- Bounded headless boots with `TOTK_PRESENT_WATCHDOG=2500` that present through the stop's window and past it with zero stops; every claim tied to a recorded observation; no gameplay claim.
+- Bounded headless boots (`probe.sh <n> 65` from `.babysteps/scratch/S2.15-*/`, the S2.12/S2.13 control schedule unchanged) on a machine with the GPU free — verify that before the batch, and discard the batch if another process held it.
+- Every claim tied to a recorded observation; no gameplay claim; no visual-correctness claim.
 
 ## When this slice closes
 
-Write the next seed from what S2.14 leaves behind, re-verify the Do-Not count (12 or higher), and commit the state, the feasibility record and the seed.
+Write the next seed from what S2.15 leaves behind, re-verify the Do-Not count (14 or higher), and commit the state,
+the feasibility record and the seed.
