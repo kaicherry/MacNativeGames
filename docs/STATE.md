@@ -180,6 +180,7 @@ The roadmap below contains approved candidate work units. S2.4 is promoted as th
 ### S2.3 — Boot through HID and trace to the next stop (2026-10-22)
 
 - The service is registered as `hid` (no colon); only command 101 is observed in this run and it is handled. Commands 0–12 are not exercised here. The boot then creates two guest threads and stores focus policy 3.
+- **Code changed, committed `bf76f17`**: `account.c` adds the local `ListOpenUsers` override; `hid_service.c` and `ipc.c` retain the observed HID and HIPC diagnostics.
 - The first run stopped at `sdk+0x21a0`: `nn::account::ListOpenUsers` dereferenced a null SDK account-service holder. `nn::account::Initialize` is locally overridden and does not initialize that holder, so `ListOpenUsers` now uses the same persisted UID/open-handle state instead of falling through to the SDK.
 - The rerun passed that fault and stopped at `[totk-ipc] sm: service "friend:u" not implemented`. Its call chain is `friends::NotificationQueue::Initialize` → `friends::detail::ShimLibraryGlobal::CreateNotificationService` → `friends::detail::ipc::Initialize` → `nn::sm::GetServiceHandle`. The service open fails before any `friend:u` command is observed.
 - Build: `make prepare WORK=.` and `make runtime WORK=.` succeeded from the staged work folder. `python -m unittest discover -s tests` passed 255 tests, 1 skipped, with the known non-fatal subprocess `ResourceWarning`.
