@@ -55,6 +55,8 @@ typedef struct thr {
     struct thr *next;          // 等待链 | Wait chain
     struct thr *all;           // 全部线程链（现场导出用） | All-threads chain (for the state dump)
     int last_svc; uint64_t last_lr, last_fp;
+    uint64_t svc_args[4];      // guest x0..x3 of that SVC: a spin names its lock key here (state dump)
+    uint32_t svc_hist[0x50];   // SVCs by number: the dominant one says whether the thread spins on a lock or a condition (state dump)
     int closed;                // 句柄已关：与 exited 同时成立才释放对象（Horizon：线程对象随最后一个引用消失） | Handle closed: the object is freed only when this holds together with exited (Horizon: the thread object goes away with the last reference)
     uint64_t nsvc;             // SVC 次数（现场导出用） | SVC count (for the state dump)
     mach_port_t mport;         // 宿主线程端口（取 CPU 时间） | Host thread port (to get CPU time)
@@ -348,7 +350,7 @@ static uint64_t yield_backoff_ns(uint64_t run_ns) {
 }
 
 int svc_thread(int num, uint64_t *regs) {
-    { thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->last_fp = regs[29]; me->nsvc++; } }
+    { thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->last_fp = regs[29]; me->nsvc++; memcpy(me->svc_args, regs, sizeof me->svc_args); if (num < 0x50) me->svc_hist[num]++; } }
 
     switch (num) {
     case 0x08: {  // CreateThread(→w1 句柄; x1 入口, x2 参数, x3 栈顶, w4 优先级, w5 核) | CreateThread(→w1 handle; x1 entry, x2 argument, x3 stack top, w4 priority, w5 core)
@@ -695,11 +697,25 @@ static void dump_threads(unsigned secs) {
     thr_t *run[64]; int nrun = 0;
     for (thr_t *t = g_all; t; t = t->all) {
         uint32_t word = 0; if (t->wkind == 1 && t->waddr) memcpy(&word, (const void *)(uintptr_t)t->waddr, 4);
+        else if (t->wkind == 2 && t->wkey) memcpy(&word, (const void *)(uintptr_t)t->wkey, 4);   // a condition waiter's word is its key, not its lock
         uint64_t htid = 0; if (t->pt) pthread_threadid_np(t->pt, &htid);
         fprintf(stderr, "[totk-dump] tid=%llu ", (unsigned long long)htid);
         fprintf(stderr, "core=%d mask=%#llx ", t->cur_core, (unsigned long long)t->mask);
         fprintf(stderr, "h=%#x prio=%d %s wait=%d addr=%#llx key=%#llx tag=%#x word=%#x last_svc=%#x nsvc=%llu\n", t->handle, t->prio,
                 t->exited ? "exited" : t->started ? "run" : "new", t->wkind, (unsigned long long)t->waddr, (unsigned long long)t->wkey, t->wtag, word, t->last_svc, (unsigned long long)t->nsvc);
+        fprintf(stderr, "    last svc x0=%#llx x1=%#llx x2=%#llx x3=%#llx",
+                (unsigned long long)t->svc_args[0], (unsigned long long)t->svc_args[1],
+                (unsigned long long)t->svc_args[2], (unsigned long long)t->svc_args[3]);
+        if (t->last_svc >= 0x1a && t->last_svc <= 0x1d) {   // 0x1C's condition key is x1; the other three carry it in x0
+            uint64_t wa = t->last_svc == 0x1a ? t->svc_args[1] : t->last_svc == 0x1c ? t->svc_args[1] : t->svc_args[0];
+            uint32_t key_word = 0; mach_vm_size_t got = 0;
+            if (wa && mach_vm_read_overwrite(mach_task_self(), wa, sizeof key_word, (mach_vm_address_t)(uintptr_t)&key_word, &got) == KERN_SUCCESS && got == sizeof key_word)
+                fprintf(stderr, " word@%#llx=%#x", (unsigned long long)wa, key_word);
+        }
+        fputc('\n', stderr);
+        { unsigned a = 0, b = 0, c = 0; uint32_t na = 0, nb = 0, nc = 0;
+          for (unsigned i = 0; i < 0x50; i++) { uint32_t n = t->svc_hist[i]; if (n > na) { c = b; nc = nb; b = a; nb = na; a = i; na = n; } else if (n > nb) { c = b; nc = nb; b = i; nb = n; } else if (n > nc) { c = i; nc = n; } }
+          if (na) fprintf(stderr, "    top svc: %#x x%u, %#x x%u, %#x x%u\n", a, na, b, nb, c, nc); }
         if (t->wkind == 4) { fprintf(stderr, "    waiting on %d handle(s):", t->nwh); for (int i = 0; i < t->nwh && i < 4; i++) fprintf(stderr, " %#x", t->wh[i]); fputc('\n', stderr); }
         if (t->last_hle) { char nm[256]; runtime_hle_describe((unsigned)t->last_hle - 1, nm, sizeof nm); fprintf(stderr, "    last host call while tracing: %s\n", nm); }
         dump_chain(t->last_lr, t->last_fp);

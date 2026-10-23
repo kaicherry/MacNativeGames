@@ -2472,6 +2472,31 @@ uint64_t g_frame_pub;
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // 取图里节拍等待 / 等出图队列归还的累计，出图时按帧记（一帧内可有多次取图） | Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
 extern uint64_t g_t0_ns;   // 宿主进程起点（main.c；UIMSG 时间戳同基） | Host process start point (main.c; same base as the UIMSG timestamps)
+// Diagnostic: one message at the first present gap. A guest spin has wait=0, so TOTK_DUMP_AFTER names no wait word;
+// this names the last presented frame and the submissions that never presented, then dumps every guest thread.
+__attribute__((weak)) void runtime_dump_threads(void);
+static void *present_watchdog(void *arg) {
+    unsigned quiet_ms = (unsigned)(uintptr_t)arg;
+    uint64_t last = __atomic_load_n(&g_frame, __ATOMIC_RELAXED), changed = now_ns();
+    for (;;) {
+        usleep(100000);
+        uint64_t f = __atomic_load_n(&g_frame, __ATOMIC_RELAXED), now = now_ns();
+        if (f != last) { last = f; changed = now; continue; }
+        if (f >= 2 && now - changed >= (uint64_t)quiet_ms * 1000000) {
+            uint64_t subs = __atomic_load_n(&g_submits, __ATOMIC_RELAXED);
+            LOG("[nvn] present stop: last presented frame %llu, %llu submissions, no present for %.1f s (%.1f s since start)",
+                (unsigned long long)f, (unsigned long long)subs, (now - changed) / 1e9, (now - g_t0_ns) / 1e9);
+            if (runtime_dump_threads) runtime_dump_threads();
+            return NULL;
+        }
+    }
+}
+__attribute__((constructor)) static void present_watchdog_start(void) {
+    const char *e = getenv("TOTK_PRESENT_WATCHDOG"); if (!e || !*e || !strcmp(e, "0")) return;
+    unsigned ms = e[0] && strcmp(e, "1") ? (unsigned)atoi(e) : 1500;
+    if (ms < 100) ms = 100;
+    pthread_t th; if (!pthread_create(&th, NULL, present_watchdog, (void *)(uintptr_t)ms)) pthread_detach(th);
+}
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     NVN_BLOCKING();
     totk_tl(TL_ACQ_IN, 0, 0);
