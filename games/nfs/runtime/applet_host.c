@@ -71,11 +71,27 @@ static void show_error(uint32_t result) {
     fprintf(stderr, "[nfs] game error dialog: %04u-%04u (result %#x)\n", 2000 + (result & 0x1ff), (result >> 9) & 0x1fff, result);
 }
 
+/* ---------- nn::friends::GetFriendInvitationNotificationEvent: the applet manager's friend-invitation event ---------- */
+/* GetFriendInvitationNotificationEvent returns the process-global friend-invitation SystemEventType; offline it is never
+   signalled. Its lazy init dereferences nn::am::GetApplicationFunctions(), which is NULL here (the applet manager is not
+   run), so bind the global to a never-signalled host event instead. */
+#define FRIEND_INVITATION_EVENT_OFF 0xcabfb0u   /* sdk-module offset of the process-global friend-invitation SystemEventType */
+static void *friend_invitation_notification_event(void) {
+    static void *event;
+    if (!event) {
+        event = runtime_module_base("sdk") + FRIEND_INVITATION_EVENT_OFF;
+        hle_bind_system_event(event, 0);
+        fprintf(stderr, "[nfs] friend-invitation notification event bound, never signalled (offline)\n");
+    }
+    return event;
+}
+
 void *runtime_applet_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
         {"_ZN2nn6applet23GetPreviousProgramIndexEv", previous_program_index},
         {"_ZN2nn6applet23GetAppletResourceUserIdEv", applet_resource_user_id},
         {"_ZN2nn2am23GetAppletResourceUserIdEv", applet_resource_user_id},
+        {"_ZN2nn7friends36GetFriendInvitationNotificationEventEv", friend_invitation_notification_event},
         {"_ZN2nn2oe21TryPopLaunchParameterEPmPvm", try_pop_launch_parameter},
         {"_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_", get_balance}, {"_ZN2nn2oe24SetExpectedVolumeBalanceEff", set_balance},
         {"_ZN2nn2oe25GetProgramTotalActiveTimeEv", total_active_time}, {"_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb", inactivity_extended},
