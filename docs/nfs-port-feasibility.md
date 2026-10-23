@@ -996,3 +996,74 @@ no stop message existed to name a file, and the new stop is recorded, not fixed.
   The 7.2 GB work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and not evidence.
 
 The new all-idle present stop is the next probe. S2.12 is promoted.
+
+## S2.12 — Diagnose the all-idle present stop (2026-10-22)
+
+Eight bounded headless boots, `.babysteps/scratch/S2.12-all-idle-stop/probe.sh <n> <bound>` driving
+`run.sh <tag> <bound>`, ran from the work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work/nfs` via
+`./build/nfs-native rewritten/nfs100 boot`, each `TOTK_HEADLESS=1 TOTK_GPU_ALLOW_SUBMIT=1
+TOTK_PRESENT_WATCHDOG=2500 TOTK_INPUT_LOG=1 TOTK_INPUT_FILE=<file>` under `timeout -k 5 65`. All eight
+ended on the 65 s timer (exit 124). The schedule is the control — no presses — and matches S2.11 run C up
+to t=45 s: `hletrace 1` at t=0; `hletrace 0` then `hletrace 1` at t=45 s; `threads` at t=45 s and t=55 s;
+`shot` at t=62 s; `hletrace 0` at t=63 s. `make -n runtime shader-tools` from `games/nfs` with `WORK=<work>`
+reported nothing to be done, so the work-tree binary was current.
+
+**Reproduced in 1 of 8.** Run r4 printed the stop, verbatim:
+
+    [totk-gfx] [nvn] present stop: last presented frame 1218, 1218 submissions, no present for 2.6 s (43.4 s since start)
+
+The seven runs that did not stop (r1, r2, r3, r5, r6, r7, r8) printed zero `present stop` lines, ran the
+full 65 s, and their t=62 s `[shot]` lines name frames 1759, 1781, 1801, 1851, 1856, 1851, 1802 (last
+completed summary block "to frame 1800"; r4's is "to frame 1200").
+
+**r4 never resumed.** No `[shot]` line appears anywhere in its log; the last frame number anywhere in its
+log is 1218; its second hletrace window (`hletrace 0` at t=63 s) printed `0 calls to 0 functions`; its load
+line after the stop reads `T 0%` with the host audio thread the busiest.
+
+**r4's dump: all idle, no signal.** Every core reads `owner 0`; every guest thread is `wait=2` on a
+condition whose tag is its own handle; no thread spins. The four frame-loop threads
+`0x1002`/`0x1003`/`0x1004`/`0x1005` cycle `timeout`+`wait` pairs on their own condition keys
+(`0x70f284e8a8`, `0x70f284e828`, `0x70f284e7a8`, `0x70f28558a8`) with wait timeouts x3 ≈ `0x1f78a0b` ns ≈
+33 ms. No `signal` event appears in any of r4's three rings (the watchdog dump at 43.4 s and the scheduled
+dumps at t=45 s and t=55 s).
+
+**The pair, named from a dump.** The main thread `0x1001` (prio 44, mask `0x1`) parks untimed
+(`x3=0xffffffffffffffff`), tag `0x1001`, on `addr=0x16b3f48a4 key=0x16b3f48a8` — the third
+`nn::os::EventType`'s cs/cv layout S2.9 named — last host call `nn::oe::TryPopNotificationMessage`, guest
+chain `main+0x34a03c <- main+0x352214 <- main+0x366004 <- main+0x27eb3c <- main+0x27e328`. The signallers
+are the frame workers `0x1003`/`0x1004` (their wait stack is `sdk+0x33906c` = `TimedWaitEvent`, entered
+from the worker loop `main+0x756e64`); in every healthy run's dumps they signal the main thread's key and
+wake it: r1 `signal key=0x16b7e0ae8 by=0x1003 woke=0x1001` and `by=0x1004 woke=0x1001`; r2 `0x16f10cae8`
+by `0x1003`/`0x1004`; r3 `0x16b4348a8` by `0x1003`/`0x1004` and `0x16b4348b8` by `0x1002`/`0x1003`; r5
+`0x16fd70ae8` by `0x1004` (twice) and `0x16fd708b8` by `0x1004`; r6 `0x16d2bcae8` by `0x1003`/`0x1004`; r7
+`0x16f200ae8` by `0x1004` (twice) and `0x16f2008b8` by `0x1003`. In r4 no such signal exists, and no event
+on the main thread's key appears at all.
+
+**The condition window matches S2.11 run C's.** r4's `[cond-mem] lock=0x16b3f48a4 key=0x16b3f48a8
+holder=0x1001` has the same field layout as run C's (`lock=0x16fd088a4 key=0x16fd088a8`), differing only in
+the run's addresses.
+
+**Rate.** Across the post-fix watchdog runs — S2.9 boot3/boot4, S2.10 A/B, S2.11 P/C and S2.12 r1–r8 — 2
+stops in 14 bounded boots: 39.7 s (frame 1105, S2.11 run C) and 43.4 s (frame 1218, S2.12 r4); the S2.12
+batch alone 1 of 8 at 65 s bounds. Report the range and the runs (Do-Not #8).
+
+**Not the S2.9 shape.** No thread spins and every core reads `owner 0`; the S2.9 equal-priority rotation is
+untouched (Do-Not #9).
+
+**No code changed.** The slice changed no code, script, or build file; the stop is recorded, not fixed.
+
+### Gate, boundary, scratch
+
+- Gate GREEN: `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passed
+  255 tests in 22.967 s, 1 skipped, exit 0, the known non-fatal subprocess `ResourceWarning`
+  (`.babysteps/scratch/S2.12-all-idle-stop/gate.log`).
+- Boundary (scope: this slice's diff — documentation only; no code, script, or build file changed): linkage
+  clear — no added code, so no new call or import exists to follow into `games/totk` or `games/by3`; paths
+  clear — the slice's diff is documentation; no added code, script, or build file exists, and no predecessor
+  path is named for a command or code to resolve.
+- Scratch:
+  `.babysteps/scratch/S2.12-all-idle-stop/{run.sh,probe.sh,probe-summary.txt,r1..r8.input,r1..r8.emit,r1..r8.log,r1..r8.stdout,r1-end.png,r2-end.png,r3-end.png,r5-end.png,r6-end.png,r7-end.png,r8-end.png,gate.log}`
+  is evidence; the 7.2 GB work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and
+  not evidence.
+
+The missing wakeup is the next probe. S2.13 is promoted.
