@@ -108,7 +108,10 @@ static void wait_unlink(thr_t *t) {
     t->next = NULL;
 }
 // Condition waits/wakes kept for the state dump, so the dump names the waiter/signaller pair from the record.
-#define CTRACE_MAX 128
+// CTRACE_MAX bounds the window the dump can see: the four frame workers alone emit ~220 entries/s while stuck, so
+// the 128-entry ring covered 0.6 s and sampled only the stuck state, never the transition that caused it.
+#define CTRACE_MAX 16384
+#define CTRACE_DUMP 4096                // entries printed per dump: ~18 s of stuck churn, or ~4 s of healthy churn
 #define CTRACE_COALESCE_NS 2000000ULL   // one entry per thread+key per window: a signal storm must not flush the ring
 struct ctrace_ent { uint64_t ns; uint64_t key; uint32_t kind, h, woke; };
 static struct ctrace_ent g_ctrace[CTRACE_MAX];
@@ -771,7 +774,7 @@ static void dump_threads(unsigned secs) {
         if (!t->wkind && !t->exited && t->mport && nrun < 64) run[nrun++] = t;
     }
     if (g_ctrace_w) {
-        unsigned n = g_ctrace_w < 24 ? g_ctrace_w : 24, first = g_ctrace_w - n;
+        unsigned n = g_ctrace_w < CTRACE_DUMP ? g_ctrace_w : CTRACE_DUMP, first = g_ctrace_w - n;
         fprintf(stderr, "[cond-trace] last %u condition events (0=wait 1=signal 2=timeout):\n", n);
         for (unsigned i = first; i < g_ctrace_w; i++) {
             struct ctrace_ent *e = &g_ctrace[i % CTRACE_MAX];

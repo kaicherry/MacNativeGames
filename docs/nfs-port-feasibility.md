@@ -1067,3 +1067,110 @@ untouched (Do-Not #9).
   not evidence.
 
 The missing wakeup is the next probe. S2.13 is promoted.
+
+## S2.13 — Instrument the transition and read it on the first reproduced stop (2026-10-23)
+
+Twenty bounded headless boots, `.babysteps/scratch/S2.13-missing-wakeup/probe.sh 8 65` (r1–r8) then
+`probe-more.sh 9 12 65` (r9–r20), each driving `run.sh <tag> 65` from the work tree
+`/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work/nfs` via `./build/nfs-native rewritten/nfs100 boot`,
+each `TOTK_HEADLESS=1 TOTK_GPU_ALLOW_SUBMIT=1 TOTK_PRESENT_WATCHDOG=2500 TOTK_INPUT_LOG=1
+TOTK_INPUT_FILE=<file>` under `timeout -k 5 65`. The schedule is S2.12's control unchanged — no presses.
+All 20 ended on the 65 s timer (exit 124); every run reported `badcmd=0`.
+
+**The instrument (no behaviour change).** `games/nfs/runtime/threads.c`: `CTRACE_MAX` 128 → 16384 and a
+new `CTRACE_DUMP` 4096 entries printed per dump (was a hard-coded 24), so a dump can see ~18 s of stuck
+churn or ~4 s of healthy churn instead of 0.6 s. The 128-entry ring could not see the transition: the
+dump lands 2.6 s after the stop begins (Do-Not #12).
+
+**Reproduced in 1 of 20.** Run r17 printed the stop, verbatim:
+
+    [totk-gfx] [nvn] present stop: last presented frame 1706, 1706 submissions, no present for 2.6 s (59.7 s since start)
+
+The other 19 printed zero `present stop` lines and ran the full 65 s; their t=62 s `[shot]` frames are r1
+1768, r2 1798, r3 1800, r4 1769, r5 1721, r6 1691, r7 1651, r8 1794, r9 1691, r10 1793, r11 1773, r12
+1755, r13 1709, r14 1802, r15 1853, r16 1787, r18 1769, r19 1796, r20 1748 (range 1651–1853). r17 has no
+`[shot]` line anywhere.
+
+**Rate.** Across all post-fix watchdog runs: 3 stops in 34 bounded boots — 39.7 s / frame 1105 (S2.11 run
+C), 43.4 s / frame 1218 (S2.12 r4), 59.7 s / frame 1706 (S2.13 r17). Report the range and the runs
+(Do-Not #8).
+
+**The transition, captured for the first time.** r17's third dump (the watchdog at 59.7 s) prints a ring
+spanning `-3938.0 ms` to `0 ms`. Its last events on the completion key are `-2579.7 ms signal
+key=0x78f284e828 by=0x1001 woke=0x1003`, `-2579.7 ms signal key=0x78f284e7a8 by=0x1001 woke=0x1004`,
+`-2579.7 ms signal key=0x78f284e8a8 by=0x1001 woke=0x1002` (main kicks all three frame workers), then
+`-2579.7 ms wait key=0x16bc68b18 by=0x1001`, then each worker's own `wait` on its own key (`0x1004`,
+`0x1003`, `0x1002`). **Nothing touches `0x16bc68b18` again**: the ring's remaining 562 entries (2.55 s)
+are only the four workers' `timeout`+`wait` cycles (~33 ms each) — `0x1002`/`0x1003`/`0x1004` on their own
+keys and `0x1005` on `0x78f28558a8`.
+
+**What the workers stop doing.** They were woken by main's kick (`woke=0x1003`/`0x1004`/`0x1002`) and went
+straight back to their own `TimedWaitEvent` with no intervening signal: they ran their bodies and produced
+no completion anywhere in the system.
+
+**Counts over the 3.9 s ring.** `0x1001` 1256 signal / 364 wait; `0x1002` 160 signal / 467 wait / 70
+timeout; `0x1003` 228 / 493 / 69; `0x1004` 210 / 493 / 70; `0x1005` 108 wait / 108 timeout. Per
+completion key: `0x16bc68b18` 240 waits, all by `0x1001`, matched by 240 signals from the workers (`0x1002`
+x70, `0x1003` x89, `0x1004` x81), plus 173 signals by `0x1001` with `woke=0`; `0x16bc68b28` 83 waits by
+`0x1001` / 83 worker signals; `0x16bc68d58` 41 waits / 41 worker signals. **Only `0x1001` ever waits on a
+completion key; the workers only signal it.** The 173 `woke=0` signals by `0x1001` are the credit side, and a
+worker must be taking them through `nn::os::TryAcquireSemaphore` (`sdk+0x33b940`), which checks and decrements the
+count under the cs without ever calling the condition variable — so it leaves no entry in the ring and the
+consumer is invisible in this record.
+
+**The object is a semaphore, not a stateless cv.** r17's main line reads `h=0x1001 ... wait=2
+addr=0x16bc68b14 key=0x16bc68b18 tag=0x1001 word=0x1 last_svc=0x1c nsvc=124397`, `last svc
+x3=0xffffffffffffffff`. The object base `0x16bc68af8` reads `[+0x10]=1`, `[+0x12]=0`, `[+0x14]=0`,
+`[+0x18]=0x7fffffff`, cs `0`, cv word `1` — an `nn::os::Semaphore` with `count=0` and `max=0x7fffffff`.
+Its stack is `sdk+0xd884dc <- sdk+0x33b918 <- sdk+0x55c0fc <- main+0x743c10` =
+`nn::os::AcquireSemaphore` (`sdk+0x33b8e0`) through `__nnmusl_AcquireSemaphore`. S2.12's stopped run r4
+decodes the same way (`0x16b3f4888`: `[+0x10]=1`, `[+0x14]=0`, `[+0x18]=0x7fffffff`).
+
+**Therefore not a lost wakeup.** `nn::os::AcquireSemaphore` (`sdk+0x33b8e0`) is `cs.Enter(); while (count
+== 0) cv.Wait(cs); count--; cs.Leave()`; `nn::os::ReleaseSemaphore` (`sdk+0x33ba80`) is `cs.Enter();
+count++; cv.Signal(); cs.Leave()`. The count is the state and both sides touch it under the same critical
+section, so a release can neither precede an acquire and vanish nor arrive before a waiter registers.
+**The missing event is a release that was never issued.**
+
+**The SDK's condition protocol.** `nn::os::detail::InternalConditionVariableImplByHorizon::Signal()`
+(`sdk+0x343f20`) is `orr w1, wzr, #0x1; b <svc #0x1D>` — unconditional, with no user-mode condition-key
+read. `Wait`/`TimedWait` (`sdk+0x343f40`/`sdk+0x343fe0`) issue `svc #0x1C` with `(x0=cs, x1=cv, x2=tag,
+x3=-1|timeout)`. `InternalCriticalSectionImplByHorizon::Enter`/`Leave` (`sdk+0x344520`/`sdk+0x344610`)
+are user-mode `ldaxr/stlxr` on the cs word and reach `svc #0x1A`/`svc #0x1B` only when the `0x40000000`
+waiters bit is set. So the `0x1C` case comment, which justifies the `st32(key,1)`-before-`lock_handoff`
+order by "the SDK reads the condition key in user mode and does not issue svc 0x1D if it is 0", describes
+a mechanism this title's SDK does not have; the order is still required, for the different reason that the
+waiter links into `g_wait` under `G` and `svc 0x1D` takes `G`, so no signaller can land in between.
+
+**The worker loop is a poll.** `main+0x756e64` is the return address after `nn::os::TimedWaitEvent`, and
+the result in `w0` is overwritten there, so the loop re-runs its body every ~33 ms regardless of signal
+(`x3 ≈ 0x1f78a0b` ns, from `[x23+0x1528] x 0x0f4240`). A missed kick on a worker's event therefore
+self-heals inside one interval and cannot be the mechanism.
+
+**Not the S2.9 shape.** All three cores read `owner 0`; no `core waiter` line appears in any dump
+(`g_core_wait` empty); every waiting thread reads `wkind=2` with the cs word `0` and the cv word `1`;
+there are no lock waiters. The S2.9 equal-priority rotation is untouched (Do-Not #9).
+
+**`0x1019` is inert here.** It has no entry anywhere in the 3.9 s ring and reads `wait=4` on 1 handle
+`0x1016` with `nsvc=29`.
+
+**No fix is made.** The cause is named as a shape (a frame-completion credit taken and never returned) but
+not at a defect site, so no behaviour change was made; the instrumenting commit is the slice's only code
+change. Do-Not #12 is added from this slice: a stall's trace window must be sized from the stop's own
+lateness, not from the dump.
+
+### Gate, boundary, scratch
+
+- Gate GREEN: `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests`
+  passed 255 tests in 28.428 s, 1 skipped, exit 0, the known non-fatal subprocess `ResourceWarning`
+  (`.babysteps/scratch/S2.13-missing-wakeup/gate.log`).
+- Boundary (scope: this slice's diff against HEAD — one file, `games/nfs/runtime/threads.c`, 5 insertions /
+  2 deletions, a `#define` widening and one constant use): linkage clear — no added call, import or
+  resolve exists in the diff to follow into `games/totk` or `games/by3`; paths clear — the diff adds no
+  path literal and names neither tree.
+- Scratch:
+  `.babysteps/scratch/S2.13-missing-wakeup/{run.sh,probe.sh,probe-more.sh,probe-summary.txt,r1..r20.input,r1..r20.emit,r1..r20.log,r1..r20.stdout,r1..r20-end.png (all except r17, which stopped),gate.log,main-756e64.dis,sdk-icv.dis,sdk-ics.dis,sdk-sem.dis,sdk-twe.dis,sdk-event.dis,sdk-plt.dis,sdk-cvhelpers.dis}`
+  is evidence; the 7.2 GB work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable
+  and not evidence.
+
+The missing instrument is the completion semaphores' credit accounting. S2.14 is promoted.
