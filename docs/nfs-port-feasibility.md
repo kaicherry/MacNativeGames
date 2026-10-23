@@ -765,3 +765,69 @@ one run's stop, not the stall's frame; the observed range is **354–600** (Do-N
 - Code commit `13d2b2b`.
 
 The present stall is the next blocker: S2.8.
+
+## S2.8 — Locate the NFS present stop (2026-10-22)
+
+Six bounded headless boots (`TOTK_HEADLESS=1 TOTK_GPU_ALLOW_SUBMIT=1`, `timeout -k 5`;
+`.babysteps/scratch/S2.8-NFS-present-stop/bootA.log`–`bootF.log`) ran the new present-gap watchdog
+(`TOTK_PRESENT_WATCHDOG=<ms>`: at the first gap longer than the threshold after frame 2, print one
+message and call the guest-thread dump). The watchdog's first-stop message is the record; the stop
+time below is its "since start" minus its "no present for", and the frame is the last presented frame.
+
+| boot | watchdog | input | last presented / submissions | no-present gap | stop time | guest thread 0x1002 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 2500 ms | `hletrace 2` | 440 / 440 | 2.6 s | 14.9 s | spin `0x1D`, key word 0 |
+| B | 2500 ms | `framestep 16.7` (no-op) + `hletrace 2` | 677 / 677 | 2.6 s | 22.8 s | spin `0x1D`, key word 0 |
+| C | 2500 ms | `framestep 50` (no-op) + `hletrace 2` | 676 / 676 | 2.5 s | 22.8 s | spin `0x1D`, key word 0 |
+| D | 2500 ms | `hletrace 2` | 545 / 545 | 2.6 s | 18.4 s | wait `0x1C` on the same key; core 0 owner 0 |
+| E | 1000 ms | `hletrace 2` | 565 / 565 | 1.0 s | 19.1 s | spin `0x1D`, key word 0 |
+| F | 2500 ms | `hletrace 2`, corrected dump | 494 / 494 | 2.6 s | 16.6 s | spin `0x1D`, key word 0 |
+
+The first-stop message for boot A, verbatim:
+
+    [nvn] present stop: last presented frame 440, 440 submissions, no present for 2.6 s (17.5 s since start)
+
+**The stop is not pinned to wall time or frame count.** The six runs stopped at 440, 677, 676, 545,
+565 and 494 frames (14.9–22.8 s); with the S2.6 stops (354, 600) and the S2.7 stops (399, 354) the
+observed range is **354–677** and 12.0–22.8 s. Identical configurations differ (A 440/14.9 s vs
+D 545/18.4 s vs F 494/16.6 s). Two of the runs carried `framestep` (`runtime_frame_step_pin`) — a
+no-op in NFS (`games/nfs/runtime/game_patches.c:13`) — so they are not a frame-rate separation
+test. Do-Not #8: the range and the runs are the record, not one run's frame.
+
+**A condition-variable handshake is the common state.** In every run `submissions == last presented
+frame`: the last submitted frame presented, and the next frame was never submitted, so the stop is
+before submission rather than in the present queue or a fence. The created guest thread `0x1002`
+(prio 44, core 0) is on the condition variable at **guest heap+0xC284E8A8** (tag `0x1002`; lock word
+at `heap+0xC284E8A4`). In A/B/C/E/F it spins in `SignalProcessWideKey` (`0x1D`) on that key — top
+counts 11,149,511 / 11,642,620 / 11,084,815 / 4,635,340 / 11,148,046, key word 0; in D it waits in
+`WaitProcessWideKeyAtomic` (`0x1C`) on the same key (`wait=2`, `addr=heap+0xC284E8A4`,
+`key=heap+0xC284E8A8`) with core 0 owner 0. Per-run addresses differ only by the randomized heap base
+(A `0x7c7284e8a8`, B `0x73f284e8a8`, C/E `0x70f284e8a8`, D `0x7bf284e8a8`, F `0x70f284e8a8`).
+
+The render thread `0x1001` (the thread making the NVN calls; `hletrace` tags its calls `h=0x1001`)
+stops submitting. In the spin runs it is in the guest lock path (A/F: `wait=0`, last SVC
+`0x1A ArbitrateLock` at a nearby lock, A `heap+0xC284E7A4`, F `heap+0xC284E824`); in D it waits on a
+different condition (`wait=2`, key `0x16ae6c8f8`, last host call
+`nn::oe::TryPopNotificationMessage`). The owner of the condition key and the waiter/signaller pair
+are not yet named, and the trigger event is not named; the state is consistent with a lost
+wakeup/condition race. No fix is made in this slice.
+
+The last new host call under `hletrace 2` is `nvnCommandBufferDrawElementsBaseVertex` at 13.146 s in
+A and `nvnBufferFinalize` at 18.247–18.277 s in B/C/D/E; A and F stop before that finalize, so it is
+not causal.
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, exit 0, the known non-fatal
+  subprocess `ResourceWarning` (`.babysteps/scratch/S2.8-NFS-present-stop/gate.log`).
+- Boundary (scope: this slice's diff, `games/nfs/runtime/threads.c` and
+  `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c`): linkage clear — the added calls are
+  libc/Mach/pthread (`memcpy`, `mach_vm_read_overwrite`, `pthread_create`, `usleep`, `getenv`) and
+  the NFS runtime's own weak `runtime_dump_threads` (`games/nfs/runtime/threads.c`), with no
+  `games/totk`/`games/by3` include or call; paths clear — no predecessor or absolute path in the
+  added lines and no predecessor path in the link line.
+- Scratch: `.babysteps/scratch/S2.8-NFS-present-stop/{bootA.log,bootB.log,bootC.log,bootD.log,bootE.log,bootF.log,bootA.stdout,bootB.stdout,bootC.stdout,bootD.stdout,bootE.stdout,bootF.stdout,build.log,build2.log,gate.log,inputA.txt,inputB.txt,inputC.txt}`.
+  The work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and not evidence.
+- Code commit `ff1a5f4`.
+
+The condition-variable stop is the next blocker: S2.9.
