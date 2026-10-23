@@ -20,5 +20,6 @@ The runtime load set is the title's whole ExeFS: `rtld`, `main`, `sdk`, `subsdk0
 images, and `main.npdm` loaded as process metadata (digest bound by `scripts/prepare_runtime.py`). `make boot`
 runs from the work folder and writes its log to `<work>/nfs/logs/boot.log`.
 
-Status: the loader boot is being brought up. No gameplay claim is made; the launcher bundle and shader tools are
-not wired yet (they arrive with the app-assembly slice).
+Status: the loader boot is being brought up. No gameplay claim is made. The shader translator is carried in
+`prebuilt/macos-arm64/` and `make boot` builds it (with `build/spirv-cross/spirv-cross`) so the headless boot can
+translate shaders; the launcher bundle is not wired yet (it arrives with the app-assembly slice).

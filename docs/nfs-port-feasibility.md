@@ -639,3 +639,41 @@ the boot exits (code 2). The shader tooling arrives with the app-assembly slice.
 No game-rendered picture is observed (GPU submission stays disabled), so no visual-correctness or gameplay claim.
 Source references: `.babysteps/scratch/S2.4b-NFS-friends-event/boot.log`; commit `c493904`. The shader-translation
 service is the next blocker, split to S2.4c.
+
+## S2.4c — Carry the shader translator and translate a shader toward a frame (2026-10-22)
+
+The S2.4b stop (the absent shader translator) is resolved by carrying the shader tooling into `games/nfs/`, exactly as
+`games/by3/` does: the prebuilt NativeAOT translator is forked to `games/nfs/prebuilt/macos-arm64/{totk_xlate,
+totk_xlate.sha256,README.md}` (the BY3 copy, which the NFS graphics layer is byte-identical to), and the NFS `Makefile`
+gains the `shader-tools` target (copied from `games/by3/Makefile`): it verifies the prebuilt against its SHA-256 and
+copies it to `<work>/build/shader-service/totk_xlate`, and builds `<work>/build/spirv-cross/spirv-cross` from the pinned
+SPIRV-Cross commit `aa217aeb6c9f0ace7a0ab233b28807edf45eb165` with the same sources and flags as `build_app.py`. `make
+boot` now depends on `shader-tools`, so the headless boot has a translator on first use.
+
+### Resulting run
+
+The headless boot (`.babysteps/scratch/S2.4c-NFS-shader-translator/boot.log`, 198 lines) now starts the native service
+(`runtime translation service started (pid …, native build/shader-service/totk_xlate)`) and translates **8 shaders**, the
+first being the S2.4b failure `vs c10b455d…cf7f66b934a8`. With the shader stop gone, the game runs its render loop:
+**300 frames encoded** — frame 1 is 27 functions / 32 calls, frame 2 is 120 functions / 4,251 calls (13
+`CommandBufferBindTexture`, 12 `CommandBufferDrawArrays`, 6 `ProgramSetShaders`, …), and the loop settles at ~33 ms a
+frame (p50 33.33 / p95 33.46 ms over 299 frames). The boot then opens `audout:u` (`AudioOut open 48000 Hz x6 PCM16 ->
+Core Audio (stereo)`) and stops at `[nfs] FAIL: AudioOut buffer bounds` (`audio_out.c:94` `append`:
+`data_offset + data_size <= capacity` fails on the first `AppendAudioOutBuffer`).
+
+No game-rendered picture is observed: `GPU submission disabled: work is encoded but never submitted (no picture, no GPU
+results); TOTK_GPU_ALLOW_SUBMIT=1 re-enables it`. So no visual-correctness claim; the frames are NVN-encoded, not Metal
+submitted. No gameplay claim.
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, the known non-fatal subprocess `ResourceWarning`.
+- Boundary (scope: working tree vs HEAD — `games/nfs/Makefile`, `games/nfs/README.md`, new `games/nfs/prebuilt/`):
+  linkage clear (the `shader-tools` target clones `github.com/KhronosGroup/SPIRV-Cross` and compiles with clang++; no call
+  into `games/totk`/`games/by3`; the prebuilt binary holds no predecessor path string — `strings` finds none); paths clear
+  (the only predecessor names are provenance text in `prebuilt/.../README.md`, the same pattern as BY3's).
+- Scratch: `.babysteps/scratch/S2.4c-NFS-shader-translator/boot.log`. The stale `games/nfs/NFS_build/` (7 GB, flagged by
+  S2.4b) was removed, and the gate's temp now lands on the external volume (`TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames`;
+  see `.operator/guides/external-tmp.md`) — the S2.4b gate was RED only because the system data volume was full.
+
+The `AudioOut buffer bounds` stop is the next blocker, split to S2.5.
