@@ -140,12 +140,14 @@ static void ctrace_push(uint32_t kind, uint32_t h, uint64_t key, uint32_t woke, 
 // credit (the cv signal), who waited for one, who contested the cs, and how many wakes were followed by a re-wait with
 // no release between them. That last counter is not a lost-credit count: a take that succeeds leaves no event either,
 // so it fires on the healthy loop and must not be read as the fault.
+// A take has its own record because no such event exists: runtime_sem_take_seen reads it from the trap the take site
+// becomes (game_patches.c), so `take` names the thread that made the decrement rather than inferring it from a drop.
 #define SEM_ROW_MAX 64
 #define SEM_BY_MAX 8
-enum { SEM_ENTER = 0, SEM_LEAVE = 1, SEM_RELEASE = 2, SEM_ACQUIRE = 3 };
-struct sem_by { uint32_t h, rel, acq, enter; };
+enum { SEM_ENTER = 0, SEM_LEAVE = 1, SEM_RELEASE = 2, SEM_ACQUIRE = 3, SEM_TAKE = 4 };
+struct sem_by { uint32_t h, rel, acq, enter, take; };
 struct sem_row { uint64_t base, dec_ns, rel_ns; struct sem_by by[SEM_BY_MAX]; int nby;
-                 uint32_t count, at_enter, entered, dec, dec_delta, rel, rel_delta, rel_n, acq_n, enter_n, wake, wake_rel, rewait, unattributed; };
+                 uint32_t count, at_enter, entered, dec, dec_delta, rel, rel_delta, rel_n, acq_n, enter_n, wake, wake_rel, rewait, unattributed, take_n, last_take; };
 static struct sem_row g_sem[SEM_ROW_MAX];
 static int g_sem_n;
 
@@ -192,6 +194,8 @@ static struct sem_obs sem_note(uint64_t probe, int is_key, uint32_t h, int kind,
     case SEM_LEAVE:   if (r->entered && r->at_enter > o.count) { r->dec = h; r->dec_delta = r->at_enter - o.count; r->dec_ns = now_ns(); } r->entered = 0; break;
     case SEM_RELEASE: r->rel = h; r->rel_ns = now_ns(); r->rel_n++; if (o.count > r->count) r->rel_delta = o.count - r->count;
                       r->wake = woke; r->wake_rel = r->rel_n; if (b) b->rel++; break;
+    // The count read here is the one before the take's own store, which the trap performs after this returns.
+    case SEM_TAKE:    r->take_n++; r->last_take = h; if (b) b->take++; break;
     case SEM_ACQUIRE: r->acq_n++; if (b) b->acq++;
                       if (r->wake == h && r->wake_rel == r->rel_n) r->rewait++;   // woken for a credit, waited again, no release since
                       r->wake = 0;
@@ -254,6 +258,14 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
 void runtime_thread_note_hle(unsigned i) { thr_t *t = me_or_null(); if (t) t->last_hle = (int)i + 1; }   // hle_stack.c, while tracing
 uint32_t runtime_thread_current_handle(void) { thr_t *t = me_or_null(); return t ? t->handle : 0; }
+// A take seen at a trap site (loader.c SIGILL, the store game_patches.c replaced): the guest already holds the
+// semaphore's own critical section and no runtime lock, so this may take G. base is the SemaphoreType address.
+void runtime_sem_take_seen(uint64_t base) {
+    pthread_mutex_lock(&G);
+    thr_t *t = me_or_null();
+    sem_note(base + 0x1c, 0, t ? t->handle : 0, SEM_TAKE, 0);
+    pthread_mutex_unlock(&G);
+}
 // Host services that wait for other threads or the GPU give the core up around the wait (no host locks held).
 int runtime_core_away(void) {
     thr_t *t = me_or_null(); if (!t || t->cur_core < 0) return 0;
@@ -863,18 +875,18 @@ static void dump_threads(unsigned secs) {
                         (now_ns() - e->ns) / 1e6, k, (unsigned long long)e->key, e->h, e->woke, e->count, e->holder);
         }
     }
-    if (g_sem_n) {   // credits returned, credits waited for, cs contenders, wake/re-wait pairs (not a lost-credit count)
-        fprintf(stderr, "[sem-trace] credit ledger (rewait = woken for a credit then waited again with no release since; unattributed = takes no observation named):\n");
+    if (g_sem_n) {   // credits returned, credits waited for, credits taken at their site, cs contenders, wake/re-wait pairs
+        fprintf(stderr, "[sem-trace] credit ledger (take = a counted decrement trapped at its own store; rewait = woken for a credit then waited again with no release since; unattributed = takes no observation named):\n");
         for (int i = 0; i < g_sem_n; i++) {
             struct sem_row *r = &g_sem[i];
-            if (!r->acq_n && !r->rel_n && !r->enter_n) continue;   // a cv that no semaphore op ever reached carries nothing
+            if (!r->acq_n && !r->rel_n && !r->enter_n && !r->take_n) continue;   // a cv that no semaphore op ever reached carries nothing
             struct sem_obs lo = sem_obs_of(r->base + 0x20, 1);
             uint32_t live = lo.count == SEM_NO_COUNT ? r->count : lo.count;
-            fprintf(stderr, "[sem-trace] base=%#llx key=%#llx count=%u acq=%u rel=%u enters=%u rewait=%u unattributed=%u last_rel=%#x x%u last_dec=%#x x%u\n",
-                    (unsigned long long)r->base, (unsigned long long)(r->base + 0x20), live, r->acq_n, r->rel_n, r->enter_n,
-                    r->rewait, r->unattributed, r->rel, r->rel_delta, r->dec, r->dec_delta);
+            fprintf(stderr, "[sem-trace] base=%#llx key=%#llx count=%u acq=%u rel=%u takes=%u enters=%u rewait=%u unattributed=%u last_rel=%#x x%u last_dec=%#x x%u last_take=%#x\n",
+                    (unsigned long long)r->base, (unsigned long long)(r->base + 0x20), live, r->acq_n, r->rel_n, r->take_n, r->enter_n,
+                    r->rewait, r->unattributed, r->rel, r->rel_delta, r->dec, r->dec_delta, r->last_take);
             for (int j = 0; j < r->nby; j++)
-                fprintf(stderr, "[sem-trace]   by=%#x rel=%u acq=%u enter=%u\n", r->by[j].h, r->by[j].rel, r->by[j].acq, r->by[j].enter);
+                fprintf(stderr, "[sem-trace]   by=%#x rel=%u acq=%u take=%u enter=%u\n", r->by[j].h, r->by[j].rel, r->by[j].acq, r->by[j].take, r->by[j].enter);
         }
     }
     { uint64_t done[16]; int ndone = 0;

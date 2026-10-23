@@ -321,6 +321,17 @@ static void thread_cleanup(void) {
  for(unsigned i=0;i<4;i++)pthread_setspecific(runtime_keys[i],NULL);environment_destroy(e);
 }
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
+/* Semaphore take sites (game_patches.c): each is a `str` the guest used to store a decremented credit count, replaced
+   by udf #0. The SIGILL handler performs that store itself from the faulting thread's registers and records the take
+   against the guest thread that made it -- the store is inside the semaphore's own critical section and issues no SVC,
+   so nothing else can name the taker. */
+#define SEM_TAKE_MAX 8
+static struct { uint64_t pc; unsigned val_reg, base_reg; } sem_take[SEM_TAKE_MAX];
+static unsigned sem_take_n;
+void runtime_sem_take_site(uint64_t pc, unsigned val_reg, unsigned base_reg) {
+ need(sem_take_n < SEM_TAKE_MAX && val_reg < 31 && base_reg < 31, "semaphore take site table");
+ sem_take[sem_take_n].pc = pc; sem_take[sem_take_n].val_reg = val_reg; sem_take[sem_take_n].base_reg = base_reg; sem_take_n++;
+}
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
  for(unsigned i=0;i<NM;i++)for(unsigned j=0;j<modules[i].ngate;j++) {
   const Gate *g=&modules[i].gates[j];if((uintptr_t)modules[i].base+g->ret!=ret)continue;
@@ -343,6 +354,12 @@ static void crash(int num,siginfo_t *info,void *context) {
  /* (The TotK fault workaround for an invalid optional menu reference is TotK-only and not carried over.) */
  /* EL0 cache maintenance that Darwin traps but Horizon allows: emulate exactly two encodings (SDK only). */
  if(num==SIGILL){uint32_t insn=*(const uint32_t *)(uintptr_t)u->uc_mcontext->__ss.__pc;unsigned rt=insn&31;
+  /* A trapped semaphore take: perform the store the guest would have made, then carry on after it. */
+  if(!insn)for(unsigned i=0;i<sem_take_n;i++)if((uint64_t)u->uc_mcontext->__ss.__pc==sem_take[i].pc){
+   uint32_t v=(uint32_t)u->uc_mcontext->__ss.__x[sem_take[i].val_reg];uint64_t base=u->uc_mcontext->__ss.__x[sem_take[i].base_reg];
+   runtime_sem_take_seen(base);
+   *(volatile uint32_t *)(uintptr_t)(base+0x14)=v;
+   u->uc_mcontext->__ss.__pc+=4;return;}
   if((insn&~31u)==0xd53b0020u){if(rt!=31)u->uc_mcontext->__ss.__x[rt]=HOST_CTR_EL0;u->uc_mcontext->__ss.__pc+=4;return;}   /* mrs Xt, CTR_EL0 */
   if((insn&~31u)==0xd50b7e20u){uintptr_t a=rt==31?0:(uintptr_t)u->uc_mcontext->__ss.__x[rt];sys_dcache_flush((void *)(a&~(uintptr_t)127),128);u->uc_mcontext->__ss.__pc+=4;return;}   /* dc civac, Xt */
  }
@@ -473,7 +490,7 @@ int main(int argc,char **argv) {
  load_npdm();
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
  for(unsigned i=0;i<NM;i++)fprintf(stderr,"[nfs] relocated %s: relative=%u symbolic=%u cross=%u weak_zero=%u\n",modules[i].name,modules[i].relative,modules[i].symbolic,modules[i].cross,modules[i].weak);
- for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
+ for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main")||!strcmp(modules[i].name,"sdk"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
 #endif
