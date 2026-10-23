@@ -11,7 +11,7 @@ seededFrom: f845abd
 
 S2.22 — Keep the audio alive through an interruption. **The game's audio is now heard** (operator: "game audio that time", `stereo.log`): the queue had been created on the `AQDefaultDevice` pseudo-device and is now bound explicitly to the default device's UID and follows it when the default changes. Do not re-open that — `NFS_AUDIO_TEST=1` proved the device and process with a 440 Hz tone through the same queue, and the stereo trace (`peak` 15885, 99.5% non-zero, `mean` 1302) ruled out the downmix and a DC offset. The one open defect is the **interruption**: a system alert once cut the stream with a pop while `kAudioQueueProperty_IsRunning` stayed true, so the `IsRunning` monitor cannot see it. Detect a stalled feed instead — `appends` advancing while `played` does not, with `state == STATE_STARTED` — and rebuild the queue (`AudioQueueDispose`, `AudioQueueNewOutput`, re-bind `kAudioQueueProperty_CurrentDevice`, `AudioQueueStart`, release the lost tags so the guest does not stall). `Start`/`Stop`/`Flush`/`Close` and the default-vs-queue UIDs are already logged. Do not claim gameplay. Do not touch `games/totk` or `games/by3`.
 
-S2.22 closes when an interruption is reproduced and the sound returns without restarting the boot, with the log naming the detection and the rebuild; or the read fails with its own message and the command that produced it. Then S3.1 (input, storage, saves) resumes — see the S3.1 note below.
+S2.22 closes when an interruption is reproduced and the sound returns without restarting the boot, with the log naming the detection and the rebuild; or the read fails with its own message and the command that produced it. Then S3.1 (input, storage, saves) resumes — its entry blockers are in `docs/STATE.md` "Next action".
 
 ## What is settled — do not re-derive
 
@@ -19,7 +19,7 @@ S2.22 closes when an interruption is reproduced and the sound returns without re
 - **The 8 translated shaders are 4 vs + 4 ps, and frame 2 binds and presents them (S2.20).** Keys are in the S2.20 section. A shader named only in a run with `TOTK_GPU_ALLOW_SUBMIT` off is not evidence of drawing — that run encodes but never submits — and that was the leg S2.20 closed with one boot.
 - **Presenting is stable and the old stop is fixed (S2.9/S2.10).** S2.9's equal-priority core rotation (4 ms `CORE_SLICE_NS`) fixed the 354–677 stop; S2.10's runs present to frame 3600 (130 s) and 5447 (185 s) with zero stops. What remains is intermittent: 1 of 20 bounded 65 s boots (S2.13 r17) and 3 in 34 post-fix watchdog runs; do not pin it to a frame (Do-Not #8) and do not re-open the descriptor/release/publish/credit lines (S2.16–S2.19; Do-Not #13/#15/#17).
 - **The guest reacts to input (S2.11).** A ⊕ press moved the boot from the `PRESS ⊕` title screen to the save-data access notice, which waits for Ⓐ.
-- **Audio output recovers; the attract opener is silent (S2.21).** `audio_out.c` opens one Core Audio `AudioQueue` and a `device_monitor` thread now restarts it when Core Audio stops it (a device change, an interruption); `NFS_AUDIO_TRACE` reports appends / loudest sample / played samples / queue depth / volume every ~2 s. The opening attract screens produce `peak` 0 for ~12 s before real audio — "no sound" right after launch is the game, not the port, and a mix claim needs the trace, not silence (Do-Not #20).
+- **Audio: the game's audio is heard; the queue is bound to the output device (S2.21).** The queue had been created on the `AQDefaultDevice` pseudo-device; it is now bound explicitly to the default device's UID and follows it when the default changes — with that binding the game's audio was heard (`stereo.log`). `NFS_AUDIO_TEST=1` (a 440 Hz tone through the same queue) proved the device and process, and the stereo trace (`peak` 15885, 99.5% non-zero, `mean` 1302) ruled out the downmix and a DC offset. `device_monitor` restarts a queue that Core Audio *stops*, but an interruption that leaves `kAudioQueueProperty_IsRunning` true is **not** detected — that is S2.22. The attract opener is silent for ~12 s, so "no sound" right after launch is the game (Do-Not #20).
 - **A run must be built from the repo, not from the work tree (Do-Not #19).** `nfs-work/nfs` is an `rsync -a` snapshot whose preserved mtimes make a stale tree look current; before offering a run, re-`rsync` with `build_app.py`'s excludes (`/extracted /rewritten /build /analysis /.venv /tooling /user-data`) and force it (`rm -rf build/obj build/nfs-native`).
 - **Host diagnostics are English for `games/nfs` only (S2.20 check).** Every Han string in `games/nfs` is a `TOTK_UI("中文","English")` pair (plus the `swkbd_host.c` keyboard fixtures, which are input data). `games/by3` (444 emitted lines) and `games/totk` (474) still emit Chinese — S2.7's pass was NFS-only. Do not read an NFS language claim as covering them, and do not touch those trees from this port.
 - **Gate.** `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 255 tests, 1 skipped, exit 0, 22.608 s on 2026-10-23.
@@ -35,22 +35,18 @@ S2.22 closes when an interruption is reproduced and the sound returns without re
 
 ## Code to touch
 
-S3.1 is not yet sliced, so this is what its first unit (the save path) will touch, not a decided plan:
-
 | Work | Touch |
 | --- | --- |
-| Save-data HLE | `games/nfs/runtime/` (there is **no** `SaveData` HLE today) and the service registration it must join (`games/nfs/runtime/system_services.c`, `runtime_nfs_override`); the SDK `nn::fs`/save surface it must answer. |
-| The captures | `.babysteps/scratch/S2.11-press-plus/` (`P-pre1/P-pre2.png`, `P-post1..5.png`, `bootP.log`, `emit-P.log`) — the notice and its Ⓐ. |
-| Input (already served) | `games/nfs/runtime/hid_service.c`, `gamepad.m`, `input.c` — the pad read the notice already sees. |
-| Do not | Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not rest a claim on a run that died before its window (Do-Not #10); do not read a rate taken with the GPU held (Do-Not #14). |
+| The stall detector and the rebuild | `games/nfs/runtime/audio_out.c` — `device_monitor` (already watches `IsRunning` and the default device), `append`/`release_head` (`appends`, `played_samples`), `open_device` (`AudioQueueNewOutput`, `kAudioQueueProperty_CurrentDevice`). |
+| Evidence | `.babysteps/scratch/S2.20-shader-visual/{stereo.log,tone3.log,windowed*.log,gate-audio.log}` — the traces that ruled out the mix and the device. |
+| Do not | Do not re-open the device binding, the tone split or the downmix — all measured (S2.21). Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not read a rate taken with the GPU held (Do-Not #14). |
 
 ## Read these first, and only these
 
-- `docs/STATE.md` § "S2.11" (the notice, its frame and its Ⓐ), "S2.20" (the shader/visual boundary and the captures), and the S2.2b/S2.3 HID records.
-- `.babysteps/scratch/S2.11-press-plus/bootP.log` and the `P-*.png` captures.
-- `.operator/specs/nfs-port.md` § "Claim boundaries" — the visual and language boundaries.
-- `.operator/specs/nfs-account.md` — the account HLE pattern (a service that must not fall through).
-- `docs/donot.md` #7–#18.
+- `.operator/specs/nfs-audio.md` — the audio contract, the device binding, the recovery, and the interruption gap.
+- `docs/STATE.md` § "S2.21" — the live tests, the tone split and the stereo measurements.
+- `.babysteps/scratch/S2.20-shader-visual/stereo.log` and `tone3.log` — the traces.
+- `docs/donot.md` #7–#20.
 
 ## Do-Not entries that apply here (10 of 20)
 
@@ -74,4 +70,4 @@ S3.1 is not yet sliced, so this is what its first unit (the save path) will touc
 
 ## When this slice closes
 
-Write the next seed from what S3.1's first unit leaves behind, re-verify the Do-Not count (18 or higher), and commit the state and the seed.
+Write the next seed from what S2.22 leaves behind (S3.1 is next), re-verify the Do-Not count (20 or higher), and commit the state and the seed.
