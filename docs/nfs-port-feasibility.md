@@ -710,3 +710,30 @@ no gameplay claim.
   work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and not evidence.
 
 The absence of a stop makes the first submitted frame the next observation: S2.6.
+
+## S2.6 — Submit the encoded frames and observe the first picture (2026-10-22)
+
+The `TOTK_GPU_ALLOW_SUBMIT=1` gate (`nvn_mtl.m:147-151`) was opened for four bounded headless boots (90 s, 80 s, 75 s,
+55 s; `.babysteps/scratch/S2.6-NFS-first-frame/boot1.log`–`boot4.log`). Submission is real: frame 1 carries one
+`QueueSubmitCommands` and one `QueuePresentTexture`, and the timing line reports **GPU p50 0.86 ms / p95 1.21 ms over 292
+frames** (boot1) and **p50 1.45 / p95 1.74 over 300 frames** (boot2), against 0.00 ms when submission was disabled. No
+Metal validation failure, draw error, crash, or kernel panic was recorded in any run; every run was ended by its timer.
+
+The picture path works. `shot` at frame 2 wrote a 1920x1080 PNG that is pure black (mean 0, max 0); the 5 s shot (frame
+144) is also black. The 15 s shot (**frame 441**) is the first non-black capture: mean 0.000697, max 0.996, a small white
+bar in the lower right (`f15.png`). That is what the captured frame shows; no further visual-correctness claim.
+
+A new stop appears after the picture. Presenting stops once the game reaches **frame 600 (~20 s)**: the 30 s, 50 s and
+65 s shots produce no file. A 40 s thread dump (`boot3.log`) shows guest thread `0x1002` on core 0 for **16.7 s** with
+`wait=0` and `nsvc=71,196,080`, while the other guest threads wait; the process stays alive until the timer. The 55 s
+`hletrace` run (`boot4.log`) records **460 `QueueSubmitCommands` and 460 `QueuePresentTexture`** calls and 154,805 host
+calls to 214 functions. The cause is not established; the spin, not a Metal error, is the next observation.
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, exit 0, the known non-fatal `ResourceWarning`.
+- Boundary: this slice changed no code. Linkage and paths are therefore clear on the diff; the record names only
+  `games/nfs/...` and the external work tree.
+- Scratch: `.babysteps/scratch/S2.6-NFS-first-frame/{boot1.log,boot2.log,boot3.log,boot4.log,frame2.png,f05.png,f15.png,gate.log}`.
+
+The post-600 stall is the next port blocker; the operator's requested log-language pass is the next slice.
