@@ -866,3 +866,53 @@ stops. Prior record: stops at 354–677. Commits `0c4e0b9` (diagnostics) and
 `d8a90e4` (rotation). Gate: 255 tests, 1 skipped, exit 0. Boundary (one file,
 `games/nfs/runtime/threads.c`): linkage clear (libc/pthread/Mach and the tree's own
 helpers), paths clear. S2.10 is promoted.
+
+## S2.10 — Capture what the boot presents past the old stop (2026-10-22)
+
+Two bounded headless boots carried live `shot` captures past the old stop range
+(`TOTK_HEADLESS=1 TOTK_GPU_ALLOW_SUBMIT=1 TOTK_PRESENT_WATCHDOG=2500`, `hletrace 2`,
+`timeout -k 5`; run scripts `.babysteps/scratch/S2.10-capture-past-677/runA.sh`/`runB.sh`,
+both from the work tree `./build/nfs-native rewritten/nfs100 boot`). The input file starts
+with `hletrace 2`; `shot <path>` lines are appended while the boot runs (the input thread
+polls the file), so each shot fires about two frames after its line is read. Run A
+(130 s bound) appended shots at 30/50/80/110 s; run B (185 s bound) at 60/120/170 s.
+`make runtime shader-tools` from `games/nfs` with `WORK=<work>/nfs` reported nothing to
+do (the work-tree binary, built after `d8a90e4`, was current).
+
+**Captures past frame 677.** The `[shot] F<n>` log line names each capture's presented
+frame; every PNG below was also opened and viewed. Run A (`bootA.log`): `F809` fA30.png —
+the EA logo on its dark background (mean 0.0636 / max 0.3647); `F1406` fA50.png — the
+NFS Hot Pursuit Remastered logo screen over the road perspective (0.1560 / 1.0); `F2307`
+fA80.png — motion-blurred racing footage, a red car and a black-and-white police SUV
+among trees (0.3120 / 0.9961); `F3206` fA110.png — footage, a desert scene with a police
+helicopter and an orange car on a road (0.6889 / 1.0). Run B (`bootB.log`): `F1718`
+fB60.png — the logo screen with a visible `PRESS ⊕` prompt (0.1928 / 1.0); `F3518`
+fB120.png — the logo screen without a visible prompt (0.1334 / 1.0); `F5019` fB170.png —
+footage, a cockpit view with a red car's mirror and a police car behind it on a forest
+road (0.3328 / 1.0). Statistics are mean / max 8-bit luma over the 1920×1080 PNG
+(`png-stats.py`). No gameplay and no visual-correctness claim beyond these frames.
+
+**No new stop.** Neither run printed a `present stop` line. Run A reached frame 3600 in
+130 s and run B frame 5447 in 185 s (12 and 18 timing windows, p50 33.3 ms); the worst
+per-window frame-time max is 996.92 ms (run A) and 510.55 ms (run B) — hitches under the
+2500 ms watchdog threshold, so the watchdog stayed silent. The prior record (stops at
+354–677, 12.0–22.8 s) is superseded by these runs and S2.9's boot3/boot4; report ranges
+and runs, not one run's frame (Do-Not #8).
+
+**No code changed.** The slice used the existing `shot` mechanism
+(`games/nfs/runtime/input.c` → `dm_gfx_shot_at`); no stop message existed to name a file.
+
+### Gate, boundary, scratch
+
+- `python -m unittest discover -s tests` passed 255 tests, 1 skipped, exit 0, the known
+  non-fatal subprocess `ResourceWarning` (`.babysteps/scratch/S2.10-capture-past-677/gate.log`).
+- Boundary (scope: this slice's diff — documentation only; no code, script, or build file
+  changed): linkage clear — no added code, so no new call or import exists to follow into
+  `games/totk` or `games/by3`; paths clear — the slice's diff is documentation; no added
+  code, script, or build file exists, and no predecessor path is named for a command or
+  code to resolve.
+- Scratch: `.babysteps/scratch/S2.10-capture-past-677/{runA.sh,runB.sh,inputA.txt,inputB.txt,bootA.log,bootB.log,bootA.stdout,bootB.stdout,fA30.png,fA50.png,fA80.png,fA110.png,fB60.png,fB120.png,fB170.png,png-stats.py,build.log,gate.log}`.
+  The work tree `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work` is re-derivable and
+  not evidence.
+
+The title screen's `PRESS ⊕` prompt is the next probe. S2.11 is promoted.
