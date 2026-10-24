@@ -4053,7 +4053,11 @@ static const char *hilite1_env(void) { static int init; static const char *v; if
 static int gpu_path_on(const char *env, const char *what) {
     static const char *on_names[4]; static int n_on;   // TOTK: enabled switches cached by name pointer; this runs per draw / clear
     for (int i = 0; i < n_on; i++) if (on_names[i] == env) return 1;
-    const char *e = getenv(env); if (e && !strcmp(e, "1")) { if (n_on < 4) on_names[n_on++] = env; return 1; }
+    const char *e = getenv(env);
+    /* TOTK_GPU_MIDCLEAR's paths passed their probes and a five-minute session, so they default on; =0 restores the
+       stop. The other switches stay opt-in until their own probes pass. */
+    int on = e ? !strcmp(e, "1") : !strcmp(env, "TOTK_GPU_MIDCLEAR");
+    if (on) { if (n_on < 4) on_names[n_on++] = env; return 1; }
     MDIE("%s is isolated pending its standalone probe (set %s=1 to run it)", what, env);
     return 0;
 }
