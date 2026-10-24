@@ -1,53 +1,56 @@
 ---
-slice: S3.1
+slice: S3.1b
 stateFile: docs/STATE.md
-donotCount: 20
-seededFrom: 45619c7
+donotCount: 21
+seededFrom: 64ea0f4
 ---
 
-# Next slice — S3.1: input, storage and saves
+# Next slice — S3.1b: reproduce the `pctl` open and record what the game asks it
 
 ## The next action — verbatim
 
-S3.1 — Implement input, storage, and saves (roadmap S3), the next approved work unit now that S2 (graphics and first frame) is complete at S2.20 and the out-of-band audio line (S2.21/S2.22/S2.23) is closed. **Slice S3.1 into work units before starting it**; its first unit and its close condition are set when it is sliced. The measured entry blockers: a windowed `TOTK_GPU_ALLOW_SUBMIT=1` run mounts a save directory through the fs host (`host save storage: user-data/save/db047cf775247afa9b3bd6d11bcf9740`, `fs mount save:`), runs to frame 2404, and then stops at exit 1 on an unimplemented **`pctl`** service (`sm: service "pctl" not implemented`); the `savedata` service is still absent from `games/nfs/runtime`, and whether the save-data access notice (S2.11 frame 1788) was passed is not established by the log. Input itself is already served by the HID service (S2.2b) and the pad is read (S2.11). Do not re-open the descriptor, release, publish or credit lines without a new observation (Do-Not #8, #13, #15, #17). Do not touch `games/totk` or `games/by3`.
+S3.1b — Reproduce the `pctl` open and record the commands the game sends it, from the operator's windowed build, which is the review point. S3.1a is done: `games/nfs/runtime/pctl_service.c` registers the `pctl` service, so an open of it is answered (`rc 0`, each client out-buffer zeroed, the command logged) instead of stopping the boot. The open was **not** reproduced from a scripted input file: three repo-built runs (140 s and 200 s bounds; frames 3900, 5700) pressed Ⓐ past the save-data notice and swept fourteen buttons, and no `pctl` open occurred at all — `[nfs-pctl]` has never printed. The reproducing session is the operator's windowed build, so the first action is to offer it, capture the log, and read the `[nfs-pctl]` lines out of it. If the game asks a command whose shape the permissive answer does not fit, write that command's case from the logged shape. Then S3.1c — the `savedata` service, absent from `games/nfs/runtime` while the fs host already mounts the save directory. Do not touch `games/totk` or `games/by3`.
 
-S3.1 closes when: not yet defined — S3.1 must be sliced into work units first, and the unit that touches the save path sets its own close.
+S3.1b closes when: the operator's windowed run logs at least one `[nfs-pctl] #n cmd=…` line and the boot passes it, or the command it asks is implemented to its observed shape and the log shows the game proceeding past it.
 
 ## What the next session does first
 
-Name the work units, then start the first one. Two service gaps are measured: `pctl` is what the boot actually stops on (frame 2404, exit 1), and `savedata` is absent while the fs host already mounts a save directory. Decide the first unit from what the windowed run shows at the save-data notice — if the notice is still waiting for Ⓐ, that is `savedata`; if it is passed, `pctl` is the stop to clear. Input is not the first unit: the HID service already serves it and the pad is read. Write the unit's close condition into `docs/STATE.md` § "Next action" before starting it.
+Offer the operator the windowed run (`.operator/operator.md`; this is the review point — the boot past the save-data notice, into the game proper). Tell him what changed: `pctl` is now answered, so where the recorded runs died at `sm: service "pctl" not implemented` the boot should carry on. Capture the log and read every `[nfs-pctl]` line; that line is the measurement. Do not spend more boots hunting an input schedule — three boots and 25 presses did not reproduce the open (Do-Not #21).
 
 ## What is settled — do not re-derive
 
-- **S2.20 bound the visual claim.** The first 8 translated shaders (4 vertex + 4 pixel) are translated, bound, drawn and presented in frame 2; visual correctness is claimed only for the named captures. No gameplay.
-- **The audio line is closed (S2.21–S2.23).** The queue is bound to the system default and follows it (S2.21); a wedged queue is detected by a started, queued queue whose `played_samples` stops advancing and is rebuilt on the default device (S2.22); appended PCM now waits in a 240 ms host ring fed by its own thread holding 40 ms enqueued, and the tag returns at append so the guest runs ahead (S2.23).
-- **S2.23 observed:** under `TOTK_GPU_ALLOW_SUBMIT=1`, `played` advanced ~97,700 frames per 2 s line with no stalled interval, `ring=` 213–240 ms, `dev=` 37 ms, `queued` 48–52, zero drops, through windows whose worst frame was 203.88 ms and 124.72 ms. The operator's windowed run then heard it hold through a **122.97 ms** frame window with the mix loud, and reported "looks/sounds good" — the close condition is met, not inferred. That run ended at exit 1 on the unimplemented `pctl` service (see the next action).
-- **The gate** `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passed 255 tests, 1 skipped, exit 0 on 2026-10-23.
+- **The save-data notice is passed.** Ⓐ (Mac key 38, button bit 0) accepts it, and the next log lines are `host save storage: user-data/save/db047cf775247afa9b3bd6d11bcf9740` and `fs mount save: -> …`. S2.11's ⊕-only run put the notice up at frame 1788 and sat on it to frame 5100 with no mount, and `host save storage` had been in the tree since `8e05a5e` (2026-10-22 04:03), so that absence was real and not a missing code path.
+- **The fs host mounts the save directory with no `savedata` service present**, and the boot proceeds; mounting does not need `savedata`.
+- **`pctl` is the recorded stop and now has a handler:** `games/nfs/runtime/pctl_service.c`, registered through `runtime_ipc_register`, answering `rc 0` with every client out-buffer (C) zeroed, and logging `[nfs-pctl] #n cmd=… type=… x/a/b/w/c…`.
+- **The NFS runtime build globs `runtime/*.c`** (`games/nfs/Makefile:22`), so a new runtime source file needs no manifest edit. Build from the repo (Do-Not #19): `rsync -a` with `build_app.py`'s excludes, `rm -rf build/obj build/nfs-native`, `make WORK=. runtime`.
+- **Input needs no unit.** The HID service (S2.2b) serves it and the pad is read (S2.11).
+- **The gate** passed 255 tests, 1 skipped, exit 0 on 2026-10-23.
+- **The frame numbers here are not claims.** No rate or frame count is reportable from these runs (Do-Not #14).
 
 ## Withdrawn — proven wrong, do not use
 
-- **"The guest is paced by released buffers, so the queue depth is the whole cushion."** Withdrawn by S2.23: the tag returns at append, and the ring is the cushion.
-- **"The audio is silent because of routing, content or level."** Refuted in S2.22/S2.23: default device running at volume 1, `played` advancing, captured stereo normal-band and audible via `afplay`.
-- **"Detect a stalled feed by `appends` advancing while `played` does not."** S2.22: a stall stops appends too; the detector keys on `played` with the queue non-empty.
-- **The frame-completion descriptor/release/publish/credit lines** (S2.16–S2.19; Do-Not #8/#13/#15/#17).
-- **The S2.22 stall detector is built but has never fired live.** Do not read its silence as health or as a fault.
+- **"The `pctl` open follows the save mount automatically, ~20 s later."** Withdrawn by S3.1a: three runs carrying the mount to frames 3900 and 5700 produced no open. The reading came from the ordering of a log that is rate-limited (Do-Not #21).
+- **"Pressing the buttons the operator pressed reproduces his stop."** S3.1a's 11-press schedule and 14-button sweep did not.
+- **The `pctl` handler's answer is unexercised.** Do not read its presence as a verified answer to any command.
+- The withdrawn S2.16–S2.19 descriptor/release/publish/credit lines (Do-Not #8/#13/#15/#17).
+- The S2.22 stall detector is built but has never fired live.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| The save service (first unit, to be confirmed when sliced) | `games/nfs/runtime/` — a new `savedata` HLE beside the other service files, registered where the runtime registers its IPC services; `services.c`/the HLE table as that tree does it. Read `games/nfs/runtime/services.c` and a neighbouring service before adding one. |
-| Evidence | The boot's save-data notice (S2.11 frame 1788) and the `savedata` open/commit log lines of a bounded headless boot; `.babysteps/scratch/`. |
-| Do not | Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not re-open the audio path unless a run shows a new fault; do not read a rate taken with the GPU held (Do-Not #14). |
+| `pctl`, to the observed command | `games/nfs/runtime/pctl_service.c` — there is no `switch (rq->cmd)` yet; every command takes the permissive answer. Add a case per command the operator's log names, written from that command's logged descriptor shape. |
+| Evidence | The operator's windowed log: `[totk-ipc] opened service pctl` and one `[nfs-pctl] #n cmd=…` line per call. `.babysteps/scratch/`. |
+| `savedata` (S3.1c) | `games/nfs/runtime/` — a new `savedata` HLE beside the other service files; read `hid_service.c` and `friends_service.c` as the pattern. |
+| Do not | Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not read a stop rate or frame count taken with the GPU held (Do-Not #14); do not answer an unrecognised command's value as if its shape were known. |
 
 ## Read these first, and only these
 
 - `.operator/specs/nfs-port.md` § the manifest authority, the load set and the provider-resolution stance (a new service is a provider question, not a new tree).
-- `.operator/specs/nfs-audio.md` § "The host ring" — only if the slice touches audio.
-- `docs/STATE.md` § "Next action".
-- `docs/donot.md` #6, #8, #11, #13, #14, #15, #17, #19, #20.
+- `docs/STATE.md` § "S3.1a" and "Next action".
+- `docs/donot.md` #6, #8, #11, #13, #14, #15, #17, #19, #20, #21.
 
-## Do-Not entries that apply here (9 of 20)
+## Do-Not entries that apply here (10 of 21)
 
 - #6 — the append descriptor's `data_offset` is unset by this title; an offset past capacity means zero.
 - #8 — do not close the present-stop line by a rate or by runs taken while the GPU was contended.
@@ -58,14 +61,15 @@ Name the work units, then start the first one. Two service gaps are measured: `p
 - #17 — do not name main's own call by the SDK function an unwind frame reaches.
 - #19 — do not treat a work tree as the repo; re-sync it with `build_app.py`'s excludes and force the rebuild before any run.
 - #20 — do not read the absence of a sound as a broken path without measuring the samples.
+- #21 — do not read the presses a session's log shows as the presses it made.
 
 ## The gate
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passes (255 tests, 1 skipped, exit 0 on 2026-10-23).
-- A bounded boot is evidence only when it is the observation a claim rests on; its stop rate or frame touch is reportable only with the GPU otherwise free (Do-Not #14).
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (255 tests, 1 skipped at S3.1a).
+- A bounded boot or a windowed run is evidence only when it is the observation a claim rests on; its stop rate or frame touch is reportable only with the GPU otherwise free (Do-Not #14).
 - Every claim tied to a recorded observation; no gameplay claim.
-- **Offer the operator a run after any change that alters what he can see or hear** (`.operator/operator.md`), built from the repo (Do-Not #19). The next review point is the boot getting past the save-data notice into the game proper.
+- **Offer the operator a run after any change that alters what he can see or hear** (`.operator/operator.md`), built from the repo (Do-Not #19). The review point is the boot getting past the save-data notice into the game proper.
 
 ## When this slice closes
 
-Write the next seed from what S3.1 leaves behind, re-verify the Do-Not count (20 or higher), and commit the state and the seed.
+Write the next seed from what S3.1b leaves behind, re-verify the Do-Not count (21 or higher), and commit the state and the seed.
