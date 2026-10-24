@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "runtime.h"
 #include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
 #include "controller_map.h"   // the player's button layout (controls.txt)
@@ -128,9 +129,22 @@ static void refresh_gamepads(void) {
     pthread_mutex_unlock(&gamepadLock);
 }
 
+/* A scripted run cannot attribute a control response while a physical controller is merged into the
+   same pad state, so TOTK_IGNORE_GAMEPAD refuses to attach one at all. */
+static int gamepad_ignored(void) {
+    static int ignored = -1;
+    if (ignored < 0) { const char *e = getenv("TOTK_IGNORE_GAMEPAD"); ignored = e && *e && strcmp(e, "0"); }
+    return ignored;
+}
+
 static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
+    if (gamepad_ignored()) {
+        fprintf(stderr, "[totk-input] native gamepad ignored (TOTK_IGNORE_GAMEPAD): %s\n",
+                (controller.vendorName ?: @"unknown").UTF8String);
+        return;
+    }
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
         (void)changed; (void)element;
         refresh_gamepads();

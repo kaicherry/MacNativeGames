@@ -1,58 +1,54 @@
 ---
-slice: S3.3a
+slice: S3.3b
 stateFile: docs/STATE.md
 donotCount: 27
-seededFrom: the S3.2a close (the post-save-mount sm inventory is empty; the menu path is service-free)
+seededFrom: the S3.3a close (a race runs and is drivable; real-time 3D samples no texture)
 plannedTokens: 160000
 ---
-# Next slice — S3.3a: reach the first controllable frame (menus → race start)
+# Next slice — S3.3b: make real-time 3D sample its textures
 
 ## The next action — verbatim
 
-S3.3a — Reach the first controllable frame (menus → race start): drive the repo-built windowed boot past the pre-race briefing (`Ⓐ CONTINUE` on `game-c.png`) into the race, and establish a frame the player can steer. S3.2a withdrew S3.2b's subject: six windowed boots past the save mount open **no** `sm` service after it, so there is no offline service to implement and the menu path is service-free. Do not touch `games/totk` or `games/by3`.
+S3.3b — Make real-time 3D sample its textures: find why a drawn triangle carries the right shape, the right alpha and the right lighting gradient but none of its texture, and fix it. The race and the car showroom are both affected; the menu backdrops, the HUD and the mirrors are not. Do not touch `games/totk` or `games/by3`.
 
-S3.3a closes when a repo-built windowed run goes from the pre-race briefing into the race and the car responds to a scripted press — a capture and its log named — or the stop it waits on is named with the service, fault or condition behind it.
+S3.3b closes when a repo-built windowed run draws one textured surface in the race — a capture and its log named — or the stop it waits on is named with the stage (upload, handle resolution, sampler, or lighting pass) and the evidence that places it there.
 
-## What the next session does first
+## What S3.3a settled — do not re-derive
 
-1. Rebuild from the repo (Do-Not #19): `rsync -a` from `games/nfs/` with `build_app.py`'s excludes into `/Volumes/X9BS/externalTmp/MacNativeGames/nfs-work/nfs/`, `rm -rf build/obj build/nfs-native`, `make WORK=. runtime`.
-2. Reuse the exact script that reached the pre-race briefing (`.babysteps/scratch/S3.2a-inventory/run-gamestart.sh`): ⊕ 58 s, Ⓐ 64 s, Ⓐ 72 s, Ⓐ 97 s, Ⓐ 127 s, Ⓐ 162 s, Ⓐ 192 s, Ⓨ 225 s. It ends on "ROADSTERS REBORN … Ⓐ CONTINUE".
-3. From there press Ⓐ (`key 38`) to enter the race, then hold accelerate — `key 32` is Ⓨ, the footer's START; confirm which button the race uses before assuming. Capture a shot before and after, and read `[totk-fs]` / `[totk-ipc]` for what the transition asks.
-4. Capture the log under `.babysteps/scratch/S3.3a-controllable/`.
+- **The race is reached and is drivable.** `.babysteps/scratch/S3.3a-controllable/12-race-a.png` is the race proper: timer 0:43, 6th, 7.5 miles, speedo 108. The operator's `boot-operator.log` runs the race to **5100 frames / 174 s**; he drove it. The menu → briefing → race load takes about 40 s after `Ⓐ CONTINUE` (the `VEHICLES/VEH_*` and `SEACREST/TRK_UNIT*` reads run t≈244→270).
+- **Real-time 3D is untextured, and it is not only the car.** Magnified crops of a race frame — `zoom-road.png`, `zoom-car.png`, `zoom-hill.png` — are smooth shading gradients with no grain, no markings and no decal at any scale. The car is a cream-to-black gradient, not a painted body.
+- **The showroom is unlit** (operator, 2026-10-24): SELECT COLOR is "really dark, like the lights aren't on". So the real-time path loses texture *and* light together.
+- **Everything that looks right is not real-time 3D.** The briefing backdrop (`in-race.png`) and the display-settings backdrop (`62-race-a.png`) are pre-rendered images; the HUD and mirror are 2D. Their being correct is not evidence that the 3D path works.
+- **Textures upload with real data.** In the operator's race log the BC1_sRGB histogram is `0x46:284 tex/28 MB(zero 4)` — 280 of 284 uploads carried non-zero source bytes. The `(zero N)` suffix is the per-format count of all-zero sources (added in S3.3a, `nvn_mtl.m` fmtstats block).
+- **Every format maps.** No `RED_ONCE(0, "texture format … has no Metal equivalent")` and no `NO METAL EQUIV` in any run. The race's formats are `0x27` RGBA16Float, `0x42` BC1, `0x44` BC3, `0x46` BC1_sRGB, `0x48` BC3_sRGB, `0x9a` BGRA8Unorm. Format handling is not the defect; do not re-litigate it.
+- **The off-road crash left no trace.** `boot-operator.log` has no fault, no `SIGSEGV`, and no crash report exists; it ends `window closed; graceful guest shutdown pending` after a normal load report.
+- **`TOTK_IGNORE_GAMEPAD=1`** (`runtime/gamepad.m`) refuses to attach a physical controller, so a scripted run is attributable. A connected Pro Controller is otherwise OR-ed into every frame.
 
-## What is settled — do not re-derive
+## What the evidence leaves
 
-- **No `sm` service gates the menu path.** Six repo-built windowed boots opened nothing after the save mount; the only opens are `hid`, `friend:u`, `audout:u`, all before it, and no unregistered name was ever asked (`.babysteps/scratch/S3.2a-inventory/inventory.md`). `⊕ CONNECT TO AUTOLOG` fails by itself with CONNECTION FAILED, asking `sm` for nothing.
-- **The boot reaches the pre-race briefing.** `game-c.png`: "ROADSTERS REBORN / RACE · SPORTS", bounty reward table, `Ⓐ CONTINUE`; the track and its props are drawn behind it. That is past the menu, the race-location map, the event list, car select and colour select — all without a new service.
-- **The `sm` dispatch is `games/nfs/runtime/ipc.c:252`**, not `services.c` (`services.c` is memory and virtual-core). A miss logs `sm: service "X" not implemented` and calls `runtime_fail("IPC service not implemented")`.
-- **The `key` schedule command takes a Mac keycode below 128** (`runtime/input.c:160`). ⊕ = `key 36`, Ⓐ = `key 38`, Ⓨ = `key 32`; `1024` is the pad bit ⊕ becomes, not a code the file takes (Do-Not #27).
-- **A windowed boot reaches guest state a headless one does not** (Do-Not #22), and the scripted windowed run does reach it (S3.1b, S3.1d, S3.2a).
-- **The gate** passed 261 tests, 1 skipped, exit 0 (`.babysteps/scratch/S3.2a-inventory/gate.log`).
+The upload is sound and the format table is sound, so the fault is downstream of both, in one of three places. Test them in this order — the first is also the cheapest to instrument.
 
-## Withdrawn — proven wrong, do not use
-
-- **"S3.2b: movies and the offline services the inventory names."** The inventory names no offline service; the queue item is withdrawn and movie playback is a visual check inside S3.3, not a service slice.
-- **"A service gates leaving the main menu."** None does — measured across six boots, and recorded in `.operator/specs/nfs-port.md` § Adding an IPC service.
-- **"The `sm` dispatch is in `services.c`."** It is `ipc.c:252`.
-- **"The save is a working save."** It is 44.2% `0xcd` / 54.7% `0x00`; the menu shows a fresh default profile (Do-Not #6). The race may write one — check before reading its contents as state.
+1. **Handle resolution at draw.** Textures are bound as `NVNtextureHandle` values (`hle_nvn.c` `nvnCommandBufferBindTexture` → `bind_handles(OP_BIND_TEX)`), so something must turn a handle into an `id<MTLTexture>` when the draw is encoded. Count unresolved handles there; a shader with an unbound texture argument reads zero, which would leave the lighting gradient intact and the albedo black.
+2. **Sampler binding.** `nvnCommandBufferBindSeparateSampler` and the combined-handle sampler id in bits 20+ share the texture slots. A wrong or default sampler changes filtering and addressing but not the presence of grain; rule it out by checking a surface that is flat in the source.
+3. **A G-buffer or lighting pass.** The race submits **114.9 render passes per frame** and the showroom loses its lights, so a broken intermediate target (`0x27` RGBA16Float is in the histogram) would drop albedo and light together — the one hypothesis that explains both symptoms at once.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| The measurement | No runtime change until a stop names one. Read `games/nfs/runtime/input.c` (the `button()` map and the pad read), `games/nfs/runtime/services.c` (`runtime_core_checkpoint`), and `games/nfs/runtime/ipc.c` (`sm`) only if the run stops on one. |
-| Evidence | `.babysteps/scratch/S3.3a-controllable/`: the windowed log, the before/after captures, and the run script. |
-| Do not | Do not touch `games/totk` or `games/by3`; do not register a service family the guest never asks `sm` for; do not read a rate or frame count taken under GPU contention (#14). |
+| Handle resolution | `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c` (`bind_handles`, `resolve_deferred`, `life_bind` already decodes `id`/`ser`), and the draw encoder in `nvn_mtl.m` that consumes `OP_BIND_TEX`. |
+| Where a texture is looked up | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_tex.c` (`TextureGetHandle` is in the null-device list as `DeviceGetTextureHandle`), `nvn_tex.h`. |
+| Instrumentation | `nvn_mtl.m` already carries `DM_NVN_UPLOG` (note: it also logs `[pkg_upload_path]`), `DM_TEX_FMT_STATS`, `DM_NVN_FMT_LOG`. |
+| Do not | Do not touch `games/totk` or `games/by3`; do not change the format table; do not "fix" this by forcing a default texture. |
 
 ## Read these first, and only these
 
-- `.operator/guides/running-the-nfs-boot.md` — the repo build and the windowed boot.
-- `.operator/specs/nfs-port.md` — Claim boundaries; Input path; Adding an IPC service.
-- `docs/donot.md` #6, #14, #19, #22, #27.
+- `.operator/guides/running-the-nfs-boot.md` — repo build, work-tree symlinks, the cadence rule for menus, the key table.
+- `.operator/specs/nfs-port.md` — Claim boundaries.
+- `docs/donot.md` #14, #19, #22, #27.
 
-## Do-Not entries that apply here (5 of 27)
+## Do-Not entries that apply here (4 of 27)
 
-- #6 — do not read a struct the SDK copies in full as data; a fill pattern is not a value (and the save is fill).
 - #14 — discard a rate/frame batch taken under GPU contention.
 - #19 — build from the repo; re-sync and force the rebuild.
 - #22 — a headless boot reaches states a windowed one does not; change one variable at a time.
@@ -60,10 +56,9 @@ S3.3a closes when a repo-built windowed run goes from the pre-race briefing into
 
 ## The gate
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (261 tests, 1 skipped); the suite covers the test tree, not runtime C.
-- **Budget:** planned at 160k tokens; the cap is 160k per unit, 170k only when tight.
-- **Offer the operator a run** after the change, built from the repo (Do-Not #19), with the log captured. This slice's subject is the operator's own experience — a controllable frame — so his run is the evidence.
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass.
+- **Offer the operator a run** after the change, built from the repo (Do-Not #19), with the log captured. This slice's subject is visible on screen, so his run is the evidence — and he reaches the race in a fraction of the time a scripted cadence takes.
 
 ## When this slice closes
 
-Advance "Where the work is", "Next action" + gate + closes-when + Do-Not count, "Completed", "In progress" and "Queued" in the same commit (Do-Not #11); append any new fault after the last existing entry; rewrite this seed from what S3.3a leaves behind. The queue after this is S3.3b (complete a representative race).
+Advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not #11); append any new fault after the last existing entry; rewrite this seed from what S3.3b leaves behind.

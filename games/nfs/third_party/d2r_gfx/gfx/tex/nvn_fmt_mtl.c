@@ -5,6 +5,8 @@
 // Component remapping: "no alpha" formats such as RGBX / RGB_DXT1 read a as 1; RGB-family 16-bit packed formats swap r/b; all others are identity.
 // BC1–7 on iOS require GPU BC support (MTLDevice.supportsBCTextureCompression, iOS 16.4+; A19 supports it; device capability is not checked in this table).
 #include "nvn_fmt_mtl.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 enum {   // MTLPixelFormat
     R8Unorm = 10, R8Snorm = 12, R8Uint = 13, R8Sint = 14, R16Unorm = 20, R16Snorm = 22, R16Uint = 23, R16Sint = 24, R16Float = 25,
@@ -93,6 +95,11 @@ static const uint8_t astc_off[14] = {0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 
 
 int nvn_fmt_to_mtl(int f, uint32_t *mtl, uint8_t swz[4]) {
     ent e = {0, 0, 0, 0};
+    static int uplog = -1;
+    if (uplog < 0) { const char *env = getenv("DM_NVN_FMT_LOG"); uplog = env && atoi(env); }
+    if (uplog && (f >= 0x19 && f <= 0x24 || f == 0x5D || f >= 0x69 && f <= 0x6D)) {
+        printf("[nvn_fmt_log] format %#x -> kind=0 (env=1)\n", f); fflush(stdout);
+    }
     if (f >= 0x79 && f <= 0x94) { int k = (f - 0x79) % 14; e = (ent){(uint16_t)((f < 0x87 ? ASTC_LDR0 : ASTC_SRGB0) + astc_off[k]), 1, 0, 0}; }
     else if (f > 0 && f < (int)(sizeof T / sizeof *T)) e = T[f];
     if (mtl) *mtl = e.kind ? e.mtl : 0;

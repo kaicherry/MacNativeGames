@@ -2606,6 +2606,10 @@ static int tex_swizzle(const tex_t *t, int format, MTLTextureSwizzleChannels *ou
 static int swizzle_eq(MTLTextureSwizzleChannels a, MTLTextureSwizzleChannels b) { return a.red == b.red && a.green == b.green && a.blue == b.blue && a.alpha == b.alpha; }
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
+    static int ul = -1; if (ul < 0) { const char *e = getenv("DM_NVN_UPLOG"); ul = e != NULL; }
+    int kind = nvn_fmt_to_mtl(t->d.format, nil, nil);
+    if (ul && (kind == 0 || t->d.format == 0x41 || t->d.format == 0x42 || t->d.format == 0x43 || t->d.format == 0x44))
+        MLOG("[tex_desc] ser=%llu format %#x kind=%d %ux%u lv%u tgt=%d%s", (unsigned long long)t->serial, t->d.format, kind, t->d.width, t->d.height, t->d.levels, t->d.target, kind == 0 ? " NO METAL EQUIV" : "");
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "texture format %#x has no Metal equivalent (first case)", t->d.format); return nil; }
     int unp = 0; { uint32_t upf; int ubpp; if (tex_astc(t)) pf = (uint32_t)bc1_astc_pf(t->d.format); else if (tex_tc(t)) pf = (uint32_t)tc_pf(t->d.format); else if (bc_unpack(t->d.format, &upf, &ubpp)) { pf = upf; unp = 1; } }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
@@ -3305,6 +3309,10 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     int tck = !tca && tc_pf(t->d.format) != MTLPixelFormatInvalid && d.pixelFormat == tc_pf(t->d.format);   // TOTK: BC2/3/4/5/7 transcoded (tex_tc decided in tex_desc)
     int tco = t->d.format == 0x49 ? 8 : 16;   // output bytes per block
     uint32_t upf; int ubpp = 0, unp = !tca && !tck && bc_unpack(t->d.format, &upf, &ubpp);   // 无 BC：解排布后在 CPU 上解压，暂存区按解压后的大小 | No BC: decompress on the CPU after deswizzling, with the staging area sized for the decompressed data
+    { static int ulp = -1; if (ulp < 0) ulp = getenv("DM_NVN_UPLOG") != NULL;   // the uplog switch is declared in the block above, which has closed
+      if (ulp && (tca || tck || unp))
+        MLOG("[pkg_upload_path] ser=%llu format %#x %ux%u path=%s%s%s%s", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height,
+             tca ? "bc1->astc " : "", tck ? "bc23457->astc " : "", unp ? "bc_unpack " : "", !tca && !tck && !unp ? "direct " : ""); }
     size_t total = 0;
     for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -3313,13 +3321,18 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     g_bp_up_bytes += total;
     { static int fs = -1; static uint64_t by[256], n[256], gpuby[256], last; if (fs < 0) fs = getenv("DM_TEX_FMT_STATS") != NULL;   // TOTK: bytes uploaded per NVN format (first uploads + re-uploads)
       static uint64_t b4, b3, b3t;   // BC1 block kinds: four-colour, three-colour without / with transparent texels
+      static uint64_t zero[256];     // uploads whose source image sampled all zero: the pool was read before the guest wrote it
       if (fs && (t->d.format == 0x41 || t->d.format == 0x42 || t->d.format == 0x45 || t->d.format == 0x46)) {
         const uint8_t *m = t->mem; for (uint64_t i = 0; i + 8 <= t->L.size; i += 8) { uint16_t c0 = m[i] | m[i + 1] << 8, c1 = m[i + 2] | m[i + 3] << 8; uint32_t ix = m[i + 4] | m[i + 5] << 8 | m[i + 6] << 16 | (uint32_t)m[i + 7] << 24;
           if (c0 > c1) b4++; else { int t3 = 0; for (int k = 0; k < 16; k++) if (((ix >> (2 * k)) & 3) == 3) t3 = 1; if (t3) b3t++; else b3++; } } }
       if (fs && (n[0x46] + n[0x42]) % 500 == 1) MLOG("[fmtstats] BC1 blocks: four-colour %llu, three-colour opaque %llu, three-colour with transparency %llu", (unsigned long long)b4, (unsigned long long)b3, (unsigned long long)b3t);
       if (fs) { uint32_t f = t->d.format & 255; by[f] += total; n[f]++; if (t->d.target != 2) gpuby[f] += total;
+        { const uint8_t *z = t->mem; uint64_t sz = t->L.size, step = sz / 64 ? sz / 64 : 8; int allzero = sz >= 8;   // 64 sampled words stand in for the whole image
+          for (uint64_t i = 0; i + 8 <= sz && allzero; i += step) if (*(const uint64_t *)(z + i)) allzero = 0;
+          if (allzero) zero[f]++; }
         if (g_bp_up_bytes - last > (256u << 20)) { last = g_bp_up_bytes; char line[2048]; size_t o = 0;
-          for (int k = 0; k < 256; k++) if (by[k] >> 20) o += (size_t)snprintf(line + o, sizeof line - o, " %#x:%llu tex/%llu MB", k, (unsigned long long)n[k], (unsigned long long)(by[k] >> 20));
+          for (int k = 0; k < 256; k++) if (by[k] >> 20) { o += (size_t)snprintf(line + o, sizeof line - o, " %#x:%llu tex/%llu MB", k, (unsigned long long)n[k], (unsigned long long)(by[k] >> 20));
+            if (zero[k]) o += (size_t)snprintf(line + o, sizeof line - o, "(zero %llu)", (unsigned long long)zero[k]); }
           MLOG("[fmtstats] uploads so far%s", line); } } }
     void *mb; uint64_t mo;
     int gdec = unp && t->d.target != 2 && bcd_fmt(t->d.format) && bcd_pso();   // 无 BC 的 BC1–5：GPU 解排布 + GPU 解压 | BC1–5 without BC: GPU deswizzle + GPU decompression
@@ -3386,7 +3399,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         RED_ONCE(41, "GPU deswizzle of a pre-swizzled texture does not support format %#x target %d, falling back to CPU", t->d.format, t->d.target);
     }
 
-    if (tck) { RED_ONCE(47, "GPU upload of BC-transcoded texture failed (format %#x %ux%u): this texture is left blank", t->d.format, t->d.width, t->d.height); return mt; }
+    if (tck) { RED_ONCE(47, "GPU upload of BC-transcoded texture failed (format %#x %ux%u): this texture is left blank", t->d.format, t->d.width, t->d.height); MLOG("[pkg_upload_fail] ser=%llu format %#x %ux%u BC-transcoded to ASTC/EAC but CPU path not supported — texture blank", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height); return mt; }
     if (tca) total = atotal;   // CPU path writes ASTC blocks (16 bytes) into the staging
     up_begin();
     up_reserve(total ? total : 16);
@@ -3412,7 +3425,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         for (unsigned y = 0; y < layers; y++) {
             if (tca) {   // BC1 -> ASTC on the CPU (linear textures, storage outside memory pools, no GPU transcoder)
                 uint8_t *cb = malloc(pitch * rows * z); uint32_t bw4 = (w + 3) / 4, bh4 = (h + 3) / 4; size_t arow = (size_t)bw4 * 16;
-                if (!cb || (nvn_tex_is_linear(&t->d) ? 0 : nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch))) { free(cb); RED_ONCE(9, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
+                if (!cb || (nvn_tex_is_linear(&t->d) ? 0 : nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch))) { free(cb); RED_ONCE(9, "deswizzle failed format %#x target %d", t->d.format, t->d.target); MLOG("[deswizzle_fail] ser=%llu deswz(BC1->ASTC) failed format %#x target %d (first case only, see above)", (unsigned long long)t->serial, t->d.format, t->d.target); break; }
                 if (nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows * z; r++) memcpy(cb + r * pitch, t->mem + r * stride, pitch); }
                 for (uint32_t zi = 0; zi < z; zi++) nvn_bc1_to_astc_image(cb + zi * pitch * rows, pitch, bw4, bh4, (uint8_t *)stg.contents + off + zi * arow * bh4, bc1_rgba(t->d.format));
                 free(cb);
@@ -3518,7 +3531,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         NvPkg *npk = [NvPkg new]; pk = npk;
         pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size;
         pk->tex = pkg_upload(t, &pk->stamp, &pk->key, pk);
-        if (!pk->tex) return nil;
+        if (!pk->tex) { MLOG("[pkg_upload_nil] ser=%llu format %#x %ux%u pkg_upload returned nil (texture will be invisible)", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height); return nil; }
         /* TOTK (#90): seen = the upload's stamp, not "now": a write that faulted during the copy moved "now" on, and the
            now == seen shortcut above then called the texture clean without looking at its pages. */
         pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
@@ -3548,7 +3561,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         return mt;
     }
     MTLTextureDescriptor *d = tex_desc(t, 0);
-    if (!d) return nil;
+    if (!d) { MLOG("[tex_mtl_nil] ser=%llu format %#x %ux%u lv%u tgt=%d no Metal format (tex_desc returned nil)", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, t->d.levels, t->d.target); return nil; }
     id<MTLTexture> mt = stor_acquire(t, d);   // TOTK: another serial already has a texture at this storage with the same layout
     if (!mt) {
         if (g_tex_prepare_split) return nil; /* retry preserves the shared GPU content */
