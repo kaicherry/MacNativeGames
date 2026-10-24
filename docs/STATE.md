@@ -8,11 +8,11 @@ Work-unit budget: normal 160,000 tokens, tight 170,000 (`workBudgetTokens` and `
 
 ## Next action
 
-S2.25 — Lift the `TOTK_GPU_MIDCLEAR` gate and capture a logged play session. The probe passed (`checked` 6144) and the operator's enabled run lasted at least five minutes in the first Career Mode race with no crash report, so the isolation's condition — a standalone probe plus a full-game run without a panic — is met. Make the mid-pass depth-stencil clear run without the switch, rebuild from the repo, and run one bounded windowed session with its output captured to a file (the operator's run wrote to `/dev/ttys002`, so nothing was kept). Name the next stop from that log; if the operator's session ended at a stop, that stop is the unit. Do not touch `games/totk` or `games/by3`.
+S2.25 — Read the operator's captured play log and name the next stop. He runs the windowed boot himself with the log captured to `.babysteps/scratch/S2.25-play/play.log` (`TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_MIDCLEAR=1 TOTK_INPUT_LOG=1 ./build/nfs-native rewritten/nfs100 boot 2>&1 | tee …`), so a play session's diagnostics are on disk for the first time. Read that log for the next stop, the input reads that show the frame was controllable, the save write, and any `FATAL`/`FAIL`. Then default the mid-pass depth-stencil path on — `gpu_path_on("TOTK_GPU_MIDCLEAR", …)` (`nvn_mtl.m:4053`) aborts unless the switch is `1`, and the probe (6144 checks) plus the operator's ≥5-minute session without a panic have met the isolation's condition; keep the switch as an opt-out. Do not touch `games/totk` or `games/by3`.
 
 Gate: `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` passes (255 tests, 1 skipped, exit 0 today). A bounded boot or a windowed run is evidence only when it is the observation a claim rests on; its stop rate or frame touch is reportable only with the GPU otherwise free — a batch taken while another local process held the GPU is discarded, not reported (Do-Not #14). Every claim tied to a recorded observation; no gameplay claim; no visual-correctness claim beyond the named captures.
 
-S3.1b is met: the reply carries the object the SDK reads, and the windowed log shows the game proceeding past the `pctl` setup with no `SIGSEGV` at `sdk+0x3489dc`. S2.24 is met by the operator's run: the probe passed, and with `TOTK_GPU_MIDCLEAR=1` he reached a controllable frame and attempted to play with no crash report — but no log was kept. S2.25 closes when a repo-built boot runs the mid-pass depth-stencil clear without `TOTK_GPU_MIDCLEAR` and its log is on disk — the reveal and the first Career Mode race run, and the next stop (or the absence of one) is named from that log. A run whose log is not captured does not close it. The unit is planned at 150k tokens, under the 160k normal / 170k tight cap; if the brief plus touched files exceed 170k, split it before work.
+S3.1b is met: the reply carries the object the SDK reads, and the windowed log shows the game proceeding past the `pctl` setup with no `SIGSEGV` at `sdk+0x3489dc`. S2.24 is met by the operator's run: the probe passed, and with `TOTK_GPU_MIDCLEAR=1` he reached a controllable frame and attempted to play with no crash report — but no log was kept. S2.25 closes when the operator's `play.log` is read and the next stop (or the absence of one) is named from it, and a repo-built boot runs the mid-pass depth-stencil clear without `TOTK_GPU_MIDCLEAR`. A run whose log is not kept does not close it. The unit is planned at 150k tokens, under the 160k normal / 170k tight cap; if the brief plus touched files exceed 170k, split it before work.
 
 **The Do-Not list is `docs/donot.md`** — 23 entries, append-only. Never dropped, never trimmed.
 
@@ -22,7 +22,7 @@ S3.1a and S3.1b are complete: the `pctl` family (`pctl`, `pctl:s`, `pctl:a`, `pc
 
 ## In progress
 
-S2.25 is in flight: lift the depth-stencil gate and capture a logged play session. S3.1c (`savedata`) and S3.1d (save round-trip) follow, deferred but not dropped — the fs host wrote a 553 KB save-sized file with no `savedata` service, though 44% of it is `0xcd` fill, so its content is not established. The approved queue is the 15-unit re-slice in "Queued"; S5 is provisional and must be re-sliced at entry. See `docs/slices/NEXT.md`.
+S2.25 is in flight: read the operator's captured play log (`.babysteps/scratch/S2.25-play/play.log`), name the next stop from it, then default the depth-stencil path on. S3.1c (`savedata`) and S3.1d (save round-trip) follow, deferred but not dropped — the fs host wrote a 553 KB save-sized file with no `savedata` service, though 44% of it is `0xcd` fill, so its content is not established. The approved queue is the 15-unit re-slice in "Queued"; S5 is provisional and must be re-sliced at entry. See `docs/slices/NEXT.md`.
 
 ## Queued
 
@@ -30,7 +30,7 @@ The remaining work was re-sliced on 2026-10-23 into 15 units. Each is planned at
 
 - S3.1b — Reproduce the `pctl` open and answer the family. **COMPLETE**: the reply carries the object the SDK reads, and the windowed boot proceeds past `sdk+0x3489dc`.
 - S2.24 — Enable the mid-pass depth-stencil clear. **COMPLETE**: the probe passed (6144 checks) and the operator's `TOTK_GPU_MIDCLEAR=1` run reached a controllable frame and attempted to play, with no crash report.
-- S2.25 — Lift the `TOTK_GPU_MIDCLEAR` gate and capture a logged play session; name the next stop from that log. **NEXT** (150k, graphics)
+- S2.25 — Read the operator's captured `play.log`, name the next stop from it, then default the depth-stencil path on. **NEXT** (150k, graphics)
 - S3.1c — Implement the `savedata` service: open, mount/commit handshake, the Ⓐ notice path. Deferred, not dropped: the fs host wrote a save-sized file with no `savedata` request. (150k)
 - S3.1d — Save round-trip: write, restart, read back, boot proceeds. (160k)
 - S3.2a — Inventory every `sm` open after saves; classify implemented vs absent. (90k)

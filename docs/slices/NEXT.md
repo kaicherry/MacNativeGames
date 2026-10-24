@@ -2,49 +2,53 @@
 slice: S2.25
 stateFile: docs/STATE.md
 donotCount: 23
-seededFrom: dc6cc23 (the S2.24 probe record)
+seededFrom: a602855 (the operator's playable run)
 plannedTokens: 150000
 ---
-# Next slice — S2.25: lift the depth-stencil gate and capture a logged play session
+# Next slice — S2.25: read the operator's captured play log, then default the depth-stencil path
 
 ## The next action — verbatim
 
-S2.25 — Lift the `TOTK_GPU_MIDCLEAR` gate and capture a logged play session. The probe passed (`checked`
-6144) and the operator's enabled run lasted at least five minutes in the first Career Mode race with no
-crash report, so the isolation's condition — a standalone probe plus a full-game run without a panic — is
-met. Make the mid-pass depth-stencil clear run without the switch, rebuild from the repo, and run one
-bounded windowed session with its output captured to a file (the operator's run wrote to `/dev/ttys002`,
-so nothing was kept). Name the next stop from that log; if the operator's session ended at a stop, that
-stop is the unit. Do not touch `games/totk` or `games/by3`.
+S2.25 — Read the operator's captured play log and name the next stop. He runs the windowed boot himself
+with the log captured to `.babysteps/scratch/S2.25-play/play.log`
+(`TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_MIDCLEAR=1 TOTK_INPUT_LOG=1 ./build/nfs-native rewritten/nfs100 boot 2>&1
+| tee …`), so a play session's diagnostics are on disk for the first time. Read that log for the next stop,
+the input reads that show the frame was controllable, the save write, and any `FATAL`/`FAIL`. Then default
+the mid-pass depth-stencil path on — `gpu_path_on("TOTK_GPU_MIDCLEAR", …)` (`nvn_mtl.m:4053`) aborts
+unless the switch is `1`, and the probe (6144 checks) plus the operator's ≥5-minute session without a panic
+have met the isolation's condition; keep the switch as an opt-out. Do not touch `games/totk` or
+`games/by3`.
 
-S2.25 closes when a repo-built boot runs the mid-pass depth-stencil clear without `TOTK_GPU_MIDCLEAR` and
-its log is on disk — the reveal and the first Career Mode race run, and the next stop (or the absence of
-one) is named from that log. A run whose log is not captured does not close it.
+S2.25 closes when the operator's `play.log` is read and the next stop (or the absence of one) is named from
+it, and a repo-built boot runs the mid-pass depth-stencil clear without `TOTK_GPU_MIDCLEAR`. A run whose
+log is not kept does not close it.
 
 ## What the next session does first
 
-1. Ask the operator how his session ended — that answer may name the next stop and change this unit's
-   shape. Do not re-derive it from the disk: the disk shows only a ≥5-minute session, 1090 pipeline
-   records and a save write.
-2. Make the path default. `gpu_path_on("TOTK_GPU_MIDCLEAR", …)` (`nvn_mtl.m:4053`) aborts unless the
-   switch is `1`; the probe passed and the full game ran without a panic, so default it on and keep the
-   switch as an opt-out rather than deleting the gate. Keep the comment honest about why it existed.
-3. Build from the repo (Do-Not #19) and run **one** bounded windowed session with its output captured:
-   `... boot 2>&1 | tee <scratch>/play.log`. No `TOTK_GPU_MIDCLEAR`.
-4. Read the log for the next stop, the save write, and any `FATAL`/`FAIL`. Name the next stop from the
-   log, not from the operator's recollection.
+1. Read `.babysteps/scratch/S2.25-play/play.log`. If it is missing or empty, the operator has not run the
+   capture yet — say so and stop; do not substitute a log from another run and do not re-derive the next
+   stop from the disk trace.
+2. In it, find: the last `frame` line and the stop (if any) — `FATAL`, `FAIL`, `signal=`, `abort`,
+   `not implemented`; the `[nfs-pctl]` lines; the `[totk-input]`/`user input` reads that show the pad was
+   live; the `fs mount save` and any save write; and whether any `FATAL mid-pass / masked / scissored
+   depth-stencil clear` appears (it should not, the switch was on).
+3. Name the next stop from the log, not from the operator's recollection, and record it.
+4. Then default the path: `gpu_path_on("TOTK_GPU_MIDCLEAR", …)` (`nvn_mtl.m:4053`) aborts unless the
+   switch is `1`. Default the depth-stencil call site (:9083) on, keep `TOTK_GPU_MIDCLEAR` as an opt-out,
+   and keep the comment honest about why the isolation existed. Build from the repo (Do-Not #19).
 
 ## What is settled — do not re-derive
 
 - **The boot reaches a controllable frame.** With the switch on, the operator attempted to play the first
-  Career Mode race. No crash report exists for that run; it lasted ≥5 minutes.
+  Career Mode race. No crash report exists for that run; it lasted ≥5 minutes and wrote 1090 pipeline
+  records and a 553 KB save-sized file.
 - **The depth-stencil clear's probe passes**: 6144 checks — scissored clears, partial stencil masks,
   preserved colours and untouched pixels across passes.
 - **`TOTK_GPU_MIDCLEAR` is the only thing between the repo build and that frame.**
-- **The fs host writes saves without a `savedata` service**: a 553 KB file lands in the mounted save
-  directory — but 44% of it is `0xcd` fill, so its content is not established (Do-Not #6).
+- **The fs host writes saves without a `savedata` service** — but 44% of `MUD64.8` is `0xcd` fill, so its
+  content is not established (Do-Not #6).
 - **The runtime writes only stdout/stderr.** Nothing tees; a session is on disk only if the shell
-  captured it.
+  captured it. `log=/dev/ttys002` was the operator's terminal, and that log is gone.
 - **The gate** passed 255 tests, 1 skipped, exit 0; it does not cover runtime C.
 
 ## Withdrawn — proven wrong, do not use
@@ -53,14 +57,14 @@ one) is named from that log. A run whose log is not captured does not close it.
   path already existed, gated.
 - **"`savedata` is the next blocker."** Withdrawn: the game wrote a save through the fs host with no
   `savedata` request.
-- **"The operator's run is a log."** It is not: `log=/dev/ttys002`, nothing captured.
+- **"The operator's 19:38 run is a log."** It is not: `log=/dev/ttys002`, nothing captured.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| The gate | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m:4053` (`gpu_path_on`) and its depth-stencil call site (:9083). Default that path on; keep `TOTK_GPU_MIDCLEAR` as an opt-out. |
-| Evidence | `.babysteps/scratch/S2.25-play/`: the tee'd windowed log, the save listing, the probe log reference. |
+| The log | `.babysteps/scratch/S2.25-play/play.log` — the operator's session; read it, do not overwrite it. |
+| The gate | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m:4053` (`gpu_path_on`) and its depth-stencil call site (:9083). |
 | Do not | Do not touch `games/totk` or `games/by3`; do not claim a completed race; do not read a rate or frame count (Do-Not #14); do not treat the `0xcd` save as data (Do-Not #6). |
 
 ## Read these first, and only these
