@@ -21,7 +21,10 @@ imposed after a macOS IGPUFamily kernel panic in full-game tests (:4048). Run th
 `./build/nfs-native rewritten/nfs100 probe-gpu-ds-clear` (`mtl_probe_ds_clear`, :12895, which sets
 `TOTK_GPU_MIDCLEAR=1` itself and replays clears across active and restarted passes) — and only then a
 bounded windowed boot with the switch on. S3.1c (`savedata`) is deferred, not dropped: the guest reached
-the race with no `savedata` request, so it is not on the path to the first frame.
+the race with no `savedata` request, so it is not on the path to the first frame. The standalone probe
+already passes: `probe-gpu-ds-clear` returned `checked` 6144 with `status: pass`
+(`.babysteps/scratch/S2.24-midclear/probe-ds-clear.log`), so the next step is the bounded windowed boot
+with the switch on.
 
 S2.24 closes when `probe-gpu-ds-clear` passes with its `checked` count reported, and a bounded windowed
 boot with `TOTK_GPU_MIDCLEAR=1` gets through the race-course reveal — no `FATAL mid-pass / masked /
@@ -35,8 +38,8 @@ the host is a stop, not a result.
    the scissor, stencil bits outside the mask, and depth during a stencil-only clear.
 2. Build from the repo (Do-Not #19): `rsync -a` `games/nfs` with `build_app.py`'s excludes,
    `rm -rf build/obj build/nfs-native`, `make WORK=. runtime`; a clean `-Werror` build is evidence.
-3. Run `./build/nfs-native rewritten/nfs100 probe-gpu-ds-clear` and report its `checked` count. A probe
-   that runs nothing has certified nothing.
+3. The probe is already green: `probe-gpu-ds-clear` → `{"status":"pass","checked":6144}` (32×32×6) at
+   `.babysteps/scratch/S2.24-midclear/probe-ds-clear.log`. Re-run it only if the path or probe changes.
 4. Only then a bounded windowed boot with `TOTK_GPU_MIDCLEAR=1` (windowed is where the race is reached;
    Do-Not #22). If the host panics, that is the isolation's reason confirmed — record it and stop.
 5. Decide how the path becomes default only after the probe and the boot both pass.
@@ -52,6 +55,8 @@ the host is a stop, not a result.
   S3.1c is not on the path to the first frame.
 - **`gpu_path_on` is the isolation mechanism**, shared with `TOTK_GPU_WIDEN`, `TOTK_GPU_BLOCKRT` and
   `TOTK_GPU_HILITE1`; it aborts with the message rather than running the path (nvn_mtl.m:4048–4058).
+- **The depth-stencil clear's own probe passes**: `probe-gpu-ds-clear` → `checked` 6144, `status: pass`
+  (scissored clears, partial stencil masks, preserved colours and untouched pixels across passes).
 - **The gate** passed 255 tests, 1 skipped, exit 0 on 2026-10-23, and does not cover runtime C.
 
 ## Withdrawn — proven wrong, do not use
