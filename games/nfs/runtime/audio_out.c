@@ -70,9 +70,8 @@ static void *silent_playback(void *arg) {
         struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
 }
-/* The queue binds to whatever the default output device was when it was created. If that changes
-   later, Core Audio can leave the queue "running" while it drains into a device nobody hears, so
-   the default device's UID is read and the queue is put back on it whenever it changes. */
+/* Reads the system default output device's UID, for diagnostics only: the queue is created on Core
+   Audio's AQDefaultDevice pseudo-device and follows the system default output by itself. */
 static CFStringRef default_output_uid(AudioDeviceID *id_out) {
     AudioDeviceID dev = 0; UInt32 size = sizeof dev;
     AudioObjectPropertyAddress a = {kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
@@ -113,10 +112,9 @@ static void rebuild_queue(AudioOut *o) {
     o->aq = made ? fresh : old;                   /* the old queue keeps serving if no new one can be made */
     pthread_mutex_unlock(&o->aq_lock);
     if (!made) { fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing and a new queue could not be made; keeping it\n"); return; }
-    {   /* bind the fresh queue to the device the user hears before it starts */
+    {   /* the fresh queue is on the system default output and follows it */
         AudioDeviceID dev = 0; CFStringRef want = default_output_uid(&dev); char b[256];
-        if (want) AudioQueueSetProperty(fresh, kAudioQueueProperty_CurrentDevice, &want, sizeof want);
-        fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing (interruption); rebuilt on %u uid %s, %u tag(s) returned\n",
+        fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing (interruption); rebuilt on the system default output (%u uid %s), %u tag(s) returned\n",
                 (unsigned)dev, uid_text(want, b, sizeof b), lost);
         if (want) CFRelease(want);
     }
@@ -129,7 +127,7 @@ static void rebuild_queue(AudioOut *o) {
    another app taking the device. The guest cannot see it and keeps appending, so left alone the
    session is silent and then stalls on a full queue. Restart it on the current default device. */
 static void *device_monitor(void *arg) {
-    AudioOut *o = arg; int stopped = 0, trace = getenv("NFS_AUDIO_TRACE") != NULL; unsigned ticks = 0, stall = 0; AudioDeviceID last_dev = 0; uint64_t last_played = 0;
+    AudioOut *o = arg; int stopped = 0, trace = getenv("NFS_AUDIO_TRACE") != NULL; unsigned ticks = 0, stall = 0; uint64_t last_played = 0;
     for (;;) {
         struct timespec ts = {0, MONITOR_PERIOD_MS * 1000000};
         nanosleep(&ts, NULL);
@@ -145,17 +143,16 @@ static void *device_monitor(void *arg) {
         }
         pthread_mutex_unlock(&o->lock);
         if (!alive) return NULL;
-        {   /* follow the user's output device: a queue can stay "running" on a device nobody hears */
-            AudioDeviceID dev = 0; CFStringRef want = default_output_uid(&dev);
-            if (dev && dev != last_dev) {
-                char b[256];
-                if (last_dev) {
-                    fprintf(stderr, "[totk-audio] AudioOut: default output changed to %u uid %s; moving the queue\n", (unsigned)dev, uid_text(want, b, sizeof b));
-                    if (want) { pthread_mutex_lock(&o->aq_lock); AudioQueueSetProperty(o->aq, kAudioQueueProperty_CurrentDevice, &want, sizeof want); AudioQueueStart(o->aq, NULL); pthread_mutex_unlock(&o->aq_lock); }
-                }
-                last_dev = dev;
-            }
-            if (want) CFRelease(want);
+        if (trace && ticks % 10 == 0) {   /* which device the system default is, whether it is running, and what the queue is on */
+            AudioDeviceID d = 0; CFStringRef u = default_output_uid(&d); char b[256], q[256];
+            AudioObjectPropertyAddress r = {kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+            UInt32 running = 0, sz = sizeof running;
+            if (d) AudioObjectGetPropertyData(d, &r, 0, NULL, &sz, &running);
+            pthread_mutex_lock(&o->aq_lock); CFStringRef qu = o->aq ? queue_uid(o->aq) : NULL; pthread_mutex_unlock(&o->aq_lock);
+            fprintf(stderr, "[nfs] audout device: system default %u uid %s running=%u, queue uid %s\n",
+                    (unsigned)d, uid_text(u, b, sizeof b), (unsigned)running, uid_text(qu, q, sizeof q));
+            if (qu) CFRelease(qu);
+            if (u) CFRelease(u);
         }
         if (!started) { stopped = 0; stall = 0; last_played = played; continue; }   /* the guest paused; a stop is expected */
         pthread_mutex_lock(&o->aq_lock);
@@ -190,9 +187,8 @@ static void open_device(AudioOut *o) {
         else {
             AudioDeviceID dev = 0; CFStringRef want = default_output_uid(&dev), have = queue_uid(o->aq);
             char a[256], b[256];
-            fprintf(stderr, "[totk-audio] AudioOut: default output %u uid %s, queue uid %s\n",
+            fprintf(stderr, "[totk-audio] AudioOut: on the system default output (default %u uid %s; queue uid %s), following it\n",
                     (unsigned)dev, uid_text(want, a, sizeof a), uid_text(have, b, sizeof b));
-            if (want) AudioQueueSetProperty(o->aq, kAudioQueueProperty_CurrentDevice, &want, sizeof want);   /* bind to what the user hears */
             if (have) CFRelease(have);
             if (want) CFRelease(want);
         }
@@ -207,7 +203,6 @@ static void to_stereo(const int16_t *in, int16_t *out, uint64_t frames, uint32_t
         if (channels == 2) { out[2 * i] = s[0]; out[2 * i + 1] = s[1]; continue; }
         if (channels == 1) { out[2 * i] = out[2 * i + 1] = s[0]; continue; }
         float c = s[2] * 0.7071f, l = s[0] + c + s[4] * 0.7071f, r = s[1] + c + s[5] * 0.7071f;   /* ITU-style 5.1 downmix, LFE left out */
-        l *= 0.5f; r *= 0.5f;
         out[2 * i] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l); out[2 * i + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
     }
 }
@@ -255,13 +250,15 @@ static void append(AudioOut *o, const IpcRequest *rq) {
     need(AudioQueueAllocateBuffer(o->aq, (UInt32)(frames * 4 ? frames * 4 : 4), &qb) == 0, "AudioOut queue buffer");
     to_stereo(ipc_guest(d.sample_buffer + offset, d.data_size), qb->mAudioData, frames, o->channels);
     if (getenv("NFS_AUDIO_TEST") && frames) {   /* a steady tone through this same queue: is the process audible at all? */
-        static double phase;
-        int16_t *pcm = qb->mAudioData;
-        for (uint64_t i = 0; i < frames; i++) {
-            int v = (int)(8000.0 * sin(phase));
-            phase += 2.0 * M_PI * 440.0 / (double)o->rate;
-            if (phase > 2.0 * M_PI) phase -= 2.0 * M_PI;
-            pcm[2 * i] = pcm[2 * i + 1] = (int16_t)v;
+        static double phase; static unsigned n; int tone = getenv("NFS_AUDIO_TEST")[0] != '2' || !((n++ / 400) & 1);
+        if (tone) {   /* "2" leaves the game's own samples in every other ~2 s window, for an A/B */
+            int16_t *pcm = qb->mAudioData;
+            for (uint64_t i = 0; i < frames; i++) {
+                int v = (int)(8000.0 * sin(phase));
+                phase += 2.0 * M_PI * 440.0 / (double)o->rate;
+                if (phase > 2.0 * M_PI) phase -= 2.0 * M_PI;
+                pcm[2 * i] = pcm[2 * i + 1] = (int16_t)v;
+            }
         }
     }
     if (getenv("NFS_AUDIO_TRACE") && frames) {   /* what actually reaches the device: the downmixed stereo */
@@ -275,6 +272,10 @@ static void append(AudioOut *o, const IpcRequest *rq) {
     }
     qb->mAudioDataByteSize = (UInt32)(frames * 4);
     if (!frames) { memset(qb->mAudioData, 0, 4); qb->mAudioDataByteSize = 4; }   /* an empty buffer still has to come back */
+    if (getenv("NFS_AUDIO_DUMP")) {   /* the exact stereo bytes handed to Core Audio, for offline listening */
+        static FILE *dump; if (!dump) dump = fopen(getenv("NFS_AUDIO_DUMP"), "wb");
+        if (dump) fwrite(qb->mAudioData, 1, qb->mAudioDataByteSize, dump);
+    }
     need(AudioQueueEnqueueBuffer(o->aq, qb, 0, NULL) == 0, "AudioOut enqueue");
     pthread_mutex_unlock(&o->aq_lock);
 }
