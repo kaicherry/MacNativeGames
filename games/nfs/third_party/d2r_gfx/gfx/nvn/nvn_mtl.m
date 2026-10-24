@@ -6267,10 +6267,22 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
 static struct { pso_key k; id<MTLRenderPipelineState> ps; uint64_t submit; int used, done; } g_pp[PSO_PEND_MAX];
 static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pp_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用条数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
-// Statistics line (pso_predict_rest, every 100 scans): guesses refused because the table was full, stale guesses freed,
-// time draws waited for a background compile, scans and which budget ended them.
+// Statistics line (pso_pp_report: every scan at first, then every 100th, and once at warm-up end): guesses refused because the table was full,
+// stale guesses freed, time draws waited for a background compile, scans and which budget ended them.
 static uint64_t g_pp_full, g_pp_reclaimed, g_pp_waits, g_pp_wait_ns, g_pp_scans, g_pp_scan_ns, g_pp_stop[3];
 static void pso_predict_rest(void);
+// Prints the cumulative per-submit wait line. The counters are cumulative, so the last line a run prints
+// is that run's total. Called on every prediction scan while the count is small and once when the warm-up
+// ends, so a boot that never misses a pipeline still reports its total (zero rather than nothing).
+static void pso_pp_report(void) {
+    pthread_mutex_lock(&g_pp_mu); uint64_t full = g_pp_full, freed = g_pp_reclaimed, waits = g_pp_waits, wait_ns = g_pp_wait_ns; int busy = 0;
+    for (int i = 0; i < PSO_PEND_MAX; i++) busy += g_pp[i].used; pthread_mutex_unlock(&g_pp_mu);
+    MLOG("parallel precompile to submit %llu: %llu scans (avg %.2f ms; stopped at the cap: commands %llu, keys %llu, time %llu), %llu started in the background, %llu taken by draws (%llu waits totalling %.1f ms), %llu dropped with a full table, %llu unused reclaimed, %d in the table now",
+         (unsigned long long)g_sub_serial, (unsigned long long)g_pp_scans, g_pp_scans ? g_pp_scan_ns / 1e6 / (double)g_pp_scans : 0.0,
+         (unsigned long long)g_pp_stop[0], (unsigned long long)g_pp_stop[1], (unsigned long long)g_pp_stop[2],
+         (unsigned long long)g_pp_kicked, (unsigned long long)g_pp_taken, (unsigned long long)waits, wait_ns / 1e6,
+         (unsigned long long)full, (unsigned long long)freed, busy);
+}
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
 // Called only with g_pp_mu held. An in-flight worker still owns its slot:
 // completion must be published before that slot can ever be reused. Negative 25 frees every slot.
@@ -6634,6 +6646,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         MLOG("pipeline warm-up done: %llu shaders / %llu render pipelines (skipped specialized fragments %llu) / %llu compute pipelines, %.1f ms of background time (shader library %d threads%s)",
              (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, warm_threads(),
              atomic_load(&g_warm_in_play) && warm_threads() > 2 ? ", 2 after entering the world" : "");
+        pso_pp_report();   // the run's pipeline-wait total so far, even when the prediction never engaged (zero)
         MLOG("warm-up breakdown: shader library %llu calls / %.1f ms (thread times summed), Metal pipelines %llu calls / %.1f ms",
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
@@ -7729,15 +7742,9 @@ static void pso_predict_rest(void) {
     memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty; g_dss_dirty = dss_dirty;
     static int logged; if (g_pp_kicked > (uint64_t)kicked0 && logged++ < 20) MLOG("parallel precompile: %d draws left in this submit, %d pipelines handed to the background", draws, (int)g_pp_kicked - kicked0);
     g_pp_scans++; g_pp_scan_ns += bp_now() - started; if (stop) g_pp_stop[stop - 1]++;
-    if (g_pp_scans % 100 == 0) {
-        pthread_mutex_lock(&g_pp_mu); uint64_t full = g_pp_full, freed = g_pp_reclaimed, waits = g_pp_waits, wait_ns = g_pp_wait_ns; int busy = 0;
-        for (int i = 0; i < PSO_PEND_MAX; i++) busy += g_pp[i].used; pthread_mutex_unlock(&g_pp_mu);
-        MLOG("parallel precompile to submit %llu: %llu scans (avg %.2f ms; stopped at the cap: commands %llu, keys %llu, time %llu), %llu started in the background, %llu taken by draws (%llu waits totalling %.1f ms), %llu dropped with a full table, %llu unused reclaimed, %d in the table now",
-             (unsigned long long)g_sub_serial, (unsigned long long)g_pp_scans, g_pp_scan_ns / 1e6 / (double)g_pp_scans,
-             (unsigned long long)g_pp_stop[0], (unsigned long long)g_pp_stop[1], (unsigned long long)g_pp_stop[2],
-             (unsigned long long)g_pp_kicked, (unsigned long long)g_pp_taken, (unsigned long long)waits, wait_ns / 1e6,
-             (unsigned long long)full, (unsigned long long)freed, busy);
-    }
+    // Every scan while the count is small, then every 100th: a bounded boot completes fewer than 100
+    // prediction scans, so at the original period of 100 this printed nothing at all.
+    if (g_pp_scans <= 100 || g_pp_scans % 100 == 0) pso_pp_report();
 }
 
 /* Prediction visits later scissor commands but must leave the active draw's state untouched. */
