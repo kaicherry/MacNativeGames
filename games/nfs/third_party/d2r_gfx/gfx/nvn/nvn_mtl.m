@@ -7091,7 +7091,32 @@ static int tex_slots_diagnostics(void) {
     if (active < 0) active = getenv("DM_NVN_TEXPNG_FS") != NULL || getenv("DM_NVN_FLASHHDR") != NULL;
     return active;
 }
+/* DM_NVN_TEXBIND: sampled-texture bindings that resolve to the all-zero dummy, per frame. A dummy is what a
+   shader samples when the handle's texture id is not in the registry, and zero albedo draws lighting over black. */
+static int texbind_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TEXBIND"); v = e && atoi(e); } return v; }
+static _Atomic uint64_t g_tb_real, g_tb_dummy;
+static _Atomic long g_tb_frame = -1;
+static _Atomic int g_tb_logged;
+static void texbind_note(int stage, int reg, int aid, uint64_t handle, int tid, const treg_t *tr, int dummy) {
+    if (!dummy) { atomic_fetch_add_explicit(&g_tb_real, 1, memory_order_relaxed); return; }
+    atomic_fetch_add_explicit(&g_tb_dummy, 1, memory_order_relaxed);
+    if (atomic_fetch_add_explicit(&g_tb_logged, 1, memory_order_relaxed) < 20)
+        MLOG("[texbind] DUMMY F%llu st%d reg%d aid%d tid=%d handle=%#llx registered=%d ser=%llu fmt=%#x %ux%u",
+             (unsigned long long)atomic_load(&g_cur_frame), stage, reg, aid, tid, (unsigned long long)handle,
+             tr && tr->ok, tr && tr->ok ? (unsigned long long)tr->t.serial : 0ull,
+             tr && tr->ok ? tr->t.d.format : 0, tr && tr->ok ? tr->t.d.width : 0u, tr && tr->ok ? tr->t.d.height : 0u);
+}
+static void texbind_roll(void) {   // one line per 60 frames: a menu binds tens per frame, the race thousands
+    if (!texbind_on()) return;
+    long fr = (long)atomic_load(&g_cur_frame);
+    if (atomic_load(&g_tb_frame) == fr) return;
+    long was = atomic_exchange(&g_tb_frame, fr);
+    if (was < 0) return;
+    uint64_t r = atomic_exchange(&g_tb_real, 0), d = atomic_exchange(&g_tb_dummy, 0);
+    if ((r || d) && fr % 60 == 0) MLOG("[texbind] F%ld sampled-texture binds: %llu real, %llu dummy", fr, (unsigned long long)r, (unsigned long long)d);
+}
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
+    texbind_roll();
     if (!sh->ae) return 1;
     if (nvn_stage == 1 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR") && R.rt.n && R.rt.color[0])
         g_flash_tonemap_target = tex_mtl(R.rt.color[0]);
@@ -7214,6 +7239,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                     tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL, tid < g_ntreg ? (unsigned long long)g_treg[tid].t.L.size : 0ull, tid < g_ntreg ? g_treg[tid].t.d.flags : 0u,
                     tid < g_ntreg ? g_treg[tid].t.d.levels : 0u, (__bridge void *)t, (__bridge void *)t.parentTexture);
             }
+            if (texbind_on()) texbind_note(nvn_stage, reg, aid, S.tex[nvn_stage][reg], tid, tid > 0 && tid < g_ntreg ? &g_treg[tid] : NULL, t == nil);
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             else if ((b->dtt == MTLTextureType2DArray && t.textureType == MTLTextureType2D) || (b->dtt == MTLTextureType2D && t.textureType == MTLTextureType2DArray)) {
                 /* TOTK: the shader indexes a 2D texture as a 2D array (the UI glyph atlas: NVN clamps the layer to 0) or the reverse;

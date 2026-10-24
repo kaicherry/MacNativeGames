@@ -1,64 +1,71 @@
 ---
-slice: S3.3b
+slice: S3.3d
 stateFile: docs/STATE.md
-donotCount: 27
-seededFrom: the S3.3a close (a race runs and is drivable; real-time 3D samples no texture)
+donotCount: 29
+seededFrom: the S3.3b close (the textures arrive; the shading that turns them into colour returns zero)
 plannedTokens: 160000
 ---
-# Next slice — S3.3b: make real-time 3D sample its textures
+# Next slice — S3.3d: restore surface radiance
 
 ## The next action — verbatim
 
-S3.3b — Make real-time 3D sample its textures: find why a drawn triangle carries the right shape, the right alpha and the right lighting gradient but none of its texture, and fix it. The race and the car showroom are both affected; the menu backdrops, the HUD and the mirrors are not. Do not touch `games/totk` or `games/by3`.
+S3.3d — Make the race's 3D surfaces lit: the G-buffer proves the textures reach the shader, so the fault is in the shading that turns them into colour. In one race frame three shaded targets are black while the G-buffer beside them is correct. Read the shading math and its constants for one lit draw, name the term that is zero, and fix it. Do not touch `games/totk` or `games/by3`; do not "fix" it by forcing a default texture or a constant light.
 
-S3.3b closes when a repo-built windowed run draws one textured surface in the race — a capture and its log named — or the stop it waits on is named with the stage (upload, handle resolution, sampler, or lighting pass) and the evidence that places it there.
+S3.3d closes when a repo-built windowed run draws one lit, textured surface in the race — a capture and its log named — or the zero term is named with the shader, the constant and the value that places it there.
 
-## What S3.3a settled — do not re-derive
+## What S3.3b settled — do not re-derive
 
-- **The race is reached and is drivable.** `.babysteps/scratch/S3.3a-controllable/12-race-a.png` is the race proper: timer 0:43, 6th, 7.5 miles, speedo 108. The operator's `boot-operator.log` runs the race to **5100 frames / 174 s**; he drove it. The menu → briefing → race load takes about 40 s after `Ⓐ CONTINUE` (the `VEHICLES/VEH_*` and `SEACREST/TRK_UNIT*` reads run t≈244→270).
-- **Real-time 3D is untextured, and it is not only the car.** Magnified crops of a race frame — `zoom-road.png`, `zoom-car.png`, `zoom-hill.png` — are smooth shading gradients with no grain, no markings and no decal at any scale. The car is a cream-to-black gradient, not a painted body.
-- **The showroom is unlit** (operator, 2026-10-24): SELECT COLOR is "really dark, like the lights aren't on". So the real-time path loses texture *and* light together.
-- **Everything that looks right is not real-time 3D.** The briefing backdrop (`in-race.png`) and the display-settings backdrop (`62-race-a.png`) are pre-rendered images; the HUD and mirror are 2D. Their being correct is not evidence that the 3D path works.
-- **Textures upload with real data.** In the operator's race log the BC1_sRGB histogram is `0x46:284 tex/28 MB(zero 4)` — 280 of 284 uploads carried non-zero source bytes. The `(zero N)` suffix is the per-format count of all-zero sources (added in S3.3a, `nvn_mtl.m` fmtstats block).
-- **Every format maps.** No `RED_ONCE(0, "texture format … has no Metal equivalent")` and no `NO METAL EQUIV` in any run. The race's formats are `0x27` RGBA16Float, `0x42` BC1, `0x44` BC3, `0x46` BC1_sRGB, `0x48` BC3_sRGB, `0x9a` BGRA8Unorm. Format handling is not the defect; do not re-litigate it.
-- **The off-road crash left no trace.** `boot-operator.log` has no fault, no `SIGSEGV`, and no crash report exists; it ends `window closed; graceful guest shutdown pending` after a normal load report.
-- **`TOTK_IGNORE_GAMEPAD=1`** (`runtime/gamepad.m`) refuses to attach a physical controller, so a scripted run is attributable. A connected Pro Controller is otherwise OR-ed into every frame.
+- **Textures reach the shader.** In passdump frame 8916 (`.babysteps/scratch/S3.3b-texbind/boot-race4.log`) the G-buffer pass **549787** (520 draws, 2,740 sampled-texture binds) writes ser6/ser7/ser8 at 1920×1080 plus depth ser9. A texdump of the adjacent frame 8915 shows **ser7 = the road, cliff, grass and trees fully textured** (`texdump/f-700.png`) and **ser6 = correct normals** (`f-600.png`). Upload, handle resolution and sampling are therefore all working on the same surfaces, in the same frame, with the same textures.
+- **Handle resolution is excluded by measurement.** `DM_NVN_TEXBIND` (`nvn_mtl.m`, `texbind_note`/`texbind_roll`) counts sampled-texture binds that resolve to the all-zero dummy: **0 dummy** in every sampled frame of the race, against 2,330–3,426 real binds per frame (`boot-race2.log`, `boot-race4.log`). A shader reading a zero albedo would have shown here and did not.
+- **The shadow atlas is not missing.** ser53 (1024×3072 depth) is rendered by pass **549771** in the same frame and is sampled through a real comparison sampler (`B … samp reg15 sid=266 cmp=1/2`). An absent shadow map is excluded.
+- **Every shaded output is black.** ser44 (pass **549788**, 3 draws — sky/atmosphere, `f-4400.png`), ser10 (pass **549789**, 330 draws, 2,032 binds — the shaded scene, `f-1000.png`), the final ser76 (`f-7600.png`) and the captured race (`50-race-a.png`) all show correct sky, fog, HUD and pre-rendered backdrops with **zero surface radiance**. The loss is not one target.
+- **The ambient chain is black at its root.** The environment cube ser12 (256×256, six faces, RG11B10Float) is entirely black (`f-1200.png`), and the 32×32 pair ser14/ser15 derived from it are black (`f-1400.png`, `f-1500.png`). ser14/ser15 are read 82 times by 549789, so the main pass's ambient input is zero by construction.
+- **The pass dump's draw line is lowercase `d`.** One `d` line per draw (with `vs=`/`fs=`); uppercase `D` is a different record (`prim=`, or a bloom note). Counting `D` makes a 330-draw pass look like one fullscreen draw. Do-Not #29.
+- **`screenshot` does not create its directory.** `texdump <path>/f-%d.png` with the directory absent arms, finds 46 colour targets, and fails every write after the frame is already dumped. `mkdir -p` in the runner first. Do-Not #28.
 
 ## What the evidence leaves
 
-The upload is sound and the format table is sound, so the fault is downstream of both, in one of three places. Test them in this order — the first is also the cheapest to instrument.
+Two independent shaded paths are black in the same frame and they share their lighting inputs, not their geometry:
 
-1. **Handle resolution at draw.** Textures are bound as `NVNtextureHandle` values (`hle_nvn.c` `nvnCommandBufferBindTexture` → `bind_handles(OP_BIND_TEX)`), so something must turn a handle into an `id<MTLTexture>` when the draw is encoded. Count unresolved handles there; a shader with an unbound texture argument reads zero, which would leave the lighting gradient intact and the albedo black.
-2. **Sampler binding.** `nvnCommandBufferBindSeparateSampler` and the combined-handle sampler id in bits 20+ share the texture slots. A wrong or default sampler changes filtering and addressing but not the presence of grain; rule it out by checking a surface that is flat in the source.
-3. **A G-buffer or lighting pass.** The race submits **114.9 render passes per frame** and the showroom loses its lights, so a broken intermediate target (`0x27` RGBA16Float is in the histogram) would drop albedo and light together — the one hypothesis that explains both symptoms at once.
+1. **The forward scene pass 549789** reads depth ser9, the sky/fog buffer ser44, the shadow atlas ser53, the environment cube ser12, the ambient pair ser14/ser15, and the material textures — and writes ser10 black. Its *own* second attachment (ser5, RG16Unorm, `f-500.png`) carries the car's geometry correctly, so the raster and the shader ran.
+2. **The environment-cube path** (549712 → ser12) is black too, and its inputs are the cube G-buffer ser16/ser17/ser18 (normals, albedo, material) — ser16/ser17 are correct (`f-1600.png`, `f-1700.png`) and ser18 is black like ser8.
+
+The cheapest read is the shading math itself: the translated Metal for every shader key is on disk at
+`NFS_build/build/shader-cache/rt-<chain>/<key>_b.metal`, and the pass dump prints each draw's key (`fs=`) and its fragment constants (`B … cb reg0 … f=a,b,c,d`). Read the fragment shader of one lit draw in 549789 and the constants it consumes, and find which term is zero: the sun term (direction/colour in a constant buffer), the shadow factor (PCF over ser53), the ambient factor (ser14/ser15, already known black), or the material/AO channel (ser8/ser18, also black).
+
+The two black channels — ser8 (material) and ser18 (material) — are the same attachment index in the G-buffer and in the cube G-buffer, and they are the only pair that is black in a buffer that is otherwise correct. Read the shading math for which of them multiplies the result before spending a boot on it.
 
 ## Code to touch
 
 | Work | Touch |
 | --- | --- |
-| Handle resolution | `games/nfs/third_party/d2r_gfx/gfx/nvn/hle_nvn.c` (`bind_handles`, `resolve_deferred`, `life_bind` already decodes `id`/`ser`), and the draw encoder in `nvn_mtl.m` that consumes `OP_BIND_TEX`. |
-| Where a texture is looked up | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_tex.c` (`TextureGetHandle` is in the null-device list as `DeviceGetTextureHandle`), `nvn_tex.h`. |
-| Instrumentation | `nvn_mtl.m` already carries `DM_NVN_UPLOG` (note: it also logs `[pkg_upload_path]`), `DM_TEX_FMT_STATS`, `DM_NVN_FMT_LOG`. |
-| Do not | Do not touch `games/totk` or `games/by3`; do not change the format table; do not "fix" this by forcing a default texture. |
+| Shading math (read first) | `NFS_build/build/shader-cache/rt-<chain>/<key>_b.metal` for the `fs=` of a lit draw in 549789; `.res.json` beside it names each binding's handle. |
+| The draw and its constants | `nvn_mtl.m` `encode_args` (constants at `PD("B %llu st%d cb reg%d …")`, line ~7190). |
+| G-buffer material attachment | `nvn_mtl.m` — how the MRT write mask and the fragment outputs of the scene pass reach c2; ser8 is black for every surface. |
+| Instrumentation already there | `DM_NVN_PASSDUMP` (per-draw keys, targets, samplers), `DM_NVN_TEXDUMP` (colour targets as PNG), `DM_NVN_TEXBIND` (dummy binds), `DM_NVN_REGLUM`, `DM_NVN_UB`/`TOTK_UBO_CAPTURE` (constant buffers). |
+| Do not | Do not touch `games/totk` or `games/by3`; do not force a default texture, a constant light or a fixed albedo. |
 
 ## Read these first, and only these
 
-- `.operator/guides/running-the-nfs-boot.md` — repo build, work-tree symlinks, the cadence rule for menus, the key table.
+- `.babysteps/scratch/S3.3b-texbind/` — `boot-race4.log` (frame 8916 passes), `texdump/` (the frame's targets), `run-race4.sh` (the ladder that reaches the race), `passes.py`/`chain.py`/`trace.py` (the readers written for them).
+- `.operator/guides/running-the-nfs-boot.md` — repo build, work-tree symlinks, the cadence rule, the key table.
 - `.operator/specs/nfs-port.md` — Claim boundaries.
-- `docs/donot.md` #14, #19, #22, #27.
+- `docs/donot.md` #14, #19, #22, #27, #28, #29.
 
-## Do-Not entries that apply here (4 of 27)
+## Do-Not entries that apply here (6 of 29)
 
 - #14 — discard a rate/frame batch taken under GPU contention.
 - #19 — build from the repo; re-sync and force the rebuild.
 - #22 — a headless boot reaches states a windowed one does not; change one variable at a time.
 - #27 — pass a Mac keycode below 128 to `key`, not a pad bit.
+- #28 — create a diagnostic's output directory before the run, not after it fails.
+- #29 — the per-draw line is lowercase `d`.
 
 ## The gate
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass.
-- **Offer the operator a run** after the change, built from the repo (Do-Not #19), with the log captured. This slice's subject is visible on screen, so his run is the evidence — and he reaches the race in a fraction of the time a scripted cadence takes.
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (261 tests, 1 skipped at the S3.3b close).
+- **Offer the operator a run** after the change, built from the repo (Do-Not #19), with the log captured. This slice's subject is what he can see, so his run is the evidence, and he reaches the race faster than a scripted ladder.
 
 ## When this slice closes
 
-Advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not #11); append any new fault after the last existing entry; rewrite this seed from what S3.3b leaves behind.
+Advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not #11); append any new fault after the last existing entry; rewrite this seed from what S3.3d leaves behind.
