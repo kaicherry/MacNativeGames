@@ -29,9 +29,8 @@ static void pctl_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     IPC_OUT(rs, ret);
 }
 
-/* The guest opens the pctl family in turn: `pctl`, `pctl:s` and `pctl:a` are observed, and `pctl:r` is
-   the family's remaining conventional variant. An unasked registration is inert and an unregistered name
-   is fatal, so the set is registered rather than rediscovered one boot at a time. */
+/* The guest opens the whole pctl family in turn — `pctl`, `pctl:s`, `pctl:a`, then `pctl:r` — and sends
+   cmd=1 to each; `sm` fails the boot for any name it does not hold, so every observed name is registered. */
 __attribute__((constructor)) static void register_pctl_service(void) {
     static const char *const names[] = { "pctl", "pctl:s", "pctl:a", "pctl:r" };
     for (unsigned i = 0; i < sizeof names / sizeof *names; i++)

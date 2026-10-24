@@ -16,8 +16,9 @@ successive runs, and registering the family cleared all four. The guest then too
 (`signal=0xb`, `esr=0x92000006`, `pc=sdk+0x3489dc`) inside the same SDK chain that opened them
 (`sdk+0x345634` → `0x34840c` → `0x34882c` → `0x3489dc`), with no fifth `pctl` request sent. The
 candidate cause is the reply to `cmd=1`: the handler answers `rc 0` with a 4-byte zero datum and no
-moved handle, and the SDK then dereferences. Reproduce headlessly first with `TOTK_INPUT_SCRIPT=1`
-(Do-Not #22), then read `sdk+0x3489dc`. S3.1c — the `savedata` service, still absent from
+moved handle, and the SDK then dereferences. Reproduce it **windowed** — the four opens do not occur
+headless (same binary and schedule, `TOTK_HEADLESS=1` reached no save mount and no open; `TOTK_AUTOLOAD`
+unset, so autoload was never on; Do-Not #22) — then read `sdk+0x3489dc`. S3.1c — the `savedata` service, still absent from
 `games/nfs/runtime` while the fs host mounts the save directory — follows; S3.1d is the save round-trip.
 Do not touch `games/totk` or `games/by3`.
 
@@ -27,12 +28,11 @@ S3.1b closes when the reply matches what the SDK reads and the log shows the gam
 
 ## What the next session does first
 
-Reproduce it headlessly before asking for another operator boot: `runtime/autoload.c:34` turns autoload
-off only when `TOTK_INPUT_SCRIPT` is set, so the earlier `TOTK_INPUT_FILE` schedules ran with autoload
-still steering the game, which does not take the save path (Do-Not #22). One boot with
-`TOTK_INPUT_SCRIPT=1 TOTK_INPUT_FILE=<schedule>` and the same two presses — ⊕ (Mac key 36) at
-`PRESS ⊕`, then Ⓐ (key 38) on the notice — should reach the four opens and the crash; drive the presses
-from the schedule if the game will not advance to the title without autoload's help.
+Reproduce it in a **windowed** run, not headless: the same binary and the same `TOTK_INPUT_FILE` schedule
+opened the four ports windowed and none headless, and `TOTK_AUTOLOAD` was unset in every run, so autoload
+was never on (Do-Not #22). One windowed boot with the same two presses — ⊕ (Mac key 36) at `PRESS ⊕`,
+then Ⓐ (key 38) on the notice — reaches the four opens and the crash (`.babysteps/scratch/S3.1b-pctl/
+windowed-verify.log`); retry if it dies at `reserve guest stack…`, the windowed placement is a coin toss.
 
 Then read `sdk+0x3489dc` (with `0x34882c`/`0x34840c`/`0x345634`, the chain that opened the four) to name
 what the SDK does with each reply, and change `pctl_service.c` to answer it: the `cmd=1` reply currently
@@ -64,8 +64,9 @@ fault.
 ## Withdrawn — proven wrong, do not use
 
 - **"The `pctl` open follows the save mount automatically" and "a scripted schedule standing in for the
-  operator proves the buttons are not the difference."** Both withdrawn: three scripted runs carrying the
-  mount to frames 3900 and 5700 produced no open, and the difference was autoload (Do-Not #22).
+  operator proves the buttons are not the difference."** Both withdrawn: headless runs carrying the mount
+  to frames 3900 and 5700 produced no open, and the difference is windowed-vs-headless (Do-Not #22); a
+  scripted **windowed** run reproduces the open.
 - **"`pctl:s` and `pctl:r` are names no run asks for."** `pctl:s` and `pctl:a` were each named by a run,
   and `pctl:r` was asked as soon as it was registered.
 - **The `cmd=1` reply shape is not established.** Do not read the crash as proof of a shape until
@@ -77,9 +78,9 @@ fault.
 | --- | --- |
 | `pctl`, to the observed reply | `games/nfs/runtime/pctl_service.c` — the handler has no `switch (rq->cmd)` and no reply-shape case; `cmd=1` is answered as a plain success with one 4-byte zero word and no moved handle. Read `sdk+0x3489dc` before changing it. |
 | Reference | `games/nfs/runtime/ipc.c` (`sm`, `respond`, `runtime_ipc_new_session`, `rs->move[]`/`rs->objects[]` — how a session or object id is handed back) and `hid_service.c` as the handler pattern. |
-| Evidence | `.babysteps/scratch/`: the `TOTK_INPUT_SCRIPT=1` run that reproduces the crash, and one `[nfs-pctl] <session> #n cmd=…` line per call. |
+| Evidence | `.babysteps/scratch/`: the windowed run that reproduces the crash, and one `[nfs-pctl] <session> #n cmd=…` line per call. |
 | `savedata` (S3.1c) | `games/nfs/runtime/` — a new `savedata` HLE beside the other service files. |
-| Do not | Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not read a stop rate or frame count taken with the GPU held (Do-Not #14); do not answer an unrecognised command's value as if its shape were known; do not ask the operator to boot before the headless reproducer works. |
+| Do not | Do not touch `games/totk` or `games/by3`; do not claim gameplay; do not read a stop rate or frame count taken with the GPU held (Do-Not #14); do not answer an unrecognised command's value as if its shape were known; do not ask the operator to boot before the windowed reproducer works. |
 
 ## Read these first, and only these
 
