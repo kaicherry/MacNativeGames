@@ -10,9 +10,8 @@
 static unsigned pctl_call_count;
 
 static void pctl_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
-    (void)s;
-    fprintf(stderr, "[nfs-pctl] #%u cmd=%u type=%u x%u a%u b%u w%u c%u data=%u\n",
-            ++pctl_call_count, rq->cmd, rq->type, rq->nx, rq->na, rq->nb, rq->nw, rq->nc, rq->data_size);
+    fprintf(stderr, "[nfs-pctl] %s #%u cmd=%u type=%u x%u a%u b%u w%u c%u data=%u\n",
+            s->name, ++pctl_call_count, rq->cmd, rq->type, rq->nx, rq->na, rq->nb, rq->nw, rq->nc, rq->data_size);
     if (rq->data_size > 0 && rq->data_size <= 256) {
         const uint32_t *d = (const uint32_t *)rq->data;
         unsigned words = rq->data_size / 4;
@@ -30,6 +29,11 @@ static void pctl_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     IPC_OUT(rs, ret);
 }
 
+/* The guest opens the pctl family in turn: `pctl`, `pctl:s` and `pctl:a` are observed, and `pctl:r` is
+   the family's remaining conventional variant. An unasked registration is inert and an unregistered name
+   is fatal, so the set is registered rather than rediscovered one boot at a time. */
 __attribute__((constructor)) static void register_pctl_service(void) {
-    runtime_ipc_register("pctl", pctl_handler, NULL, NULL);
+    static const char *const names[] = { "pctl", "pctl:s", "pctl:a", "pctl:r" };
+    for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+        runtime_ipc_register(names[i], pctl_handler, NULL, NULL);
 }

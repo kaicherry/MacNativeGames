@@ -31,3 +31,4 @@ games/totk/scripts/shader_inventory/bin/
 localTmp/
 .opencode/opencode.json
 .opencode/commands/babysteps-*.md
+.claude/commands/babysteps-*.md
