@@ -64,9 +64,17 @@ $(OUT)/spirv-cross/spirv-cross:
 	  -c "$(WORK)/src/SPIRV-Cross/$$f" -o "$(dir $@)obj/$$f.o" & done; wait
 	xcrun clang++ -arch arm64 $(addprefix $(dir $@)obj/,$(addsuffix .o,$(SPIRV_CROSS_SOURCES))) -o "$@"
 
+# The dev-tree boot has no shader seed, so nvn_mtl.m compiles every variant it meets; shader_load first looks for
+# build/shader-libs/<SHA-256 of the MSL>.metallib (what a packaged app gets from build_app.py step_shader_libs).
+# This writes them from the work tree's own runtime cache. The cache fills during a boot, so a fresh tree needs one
+# boot before this can compile anything; from the second boot on they are loaded instead of compiled.
+.PHONY: shader-libs
+shader-libs:
+	"$(PY)" scripts/build_shader_libs.py --work "$(WORK)"
+
 # NFS_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 NFS_LOG ?= $(WORK)/logs/boot.log
-boot: runtime shader-tools
+boot: runtime shader-tools shader-libs
 	@mkdir -p "$(dir $(NFS_LOG))"
 	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/nfs-native rewritten/nfs100 boot 2> "$(abspath $(NFS_LOG))"; echo "exit $$?; log: $(NFS_LOG)"
 
