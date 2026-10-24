@@ -1,13 +1,15 @@
 /* audout:u — nn::audio AudioOut, which Need for Speed's Wwise uses for its final mix (TOTK only uses the audio renderer,
    audren:u). Commands and layouts follow the public switchbrew description ("Audio services": IAudioOutManager, IAudioOut).
-   Each AudioOut is a Core Audio AudioQueue: an appended buffer's samples are copied and enqueued; when the device has
-   played it, the queue's callback gives the buffer back (GetReleasedAudioOutBuffers) and signals the buffer event, so
-   the game is paced by the real output. 5.1 output is mixed down to stereo (Switch order FL FR FC LFE BL BR).
+   An appended buffer's samples are mixed down to stereo and copied into a host ring (RING_MS); a feeder thread drains that
+   ring into the Core Audio AudioQueue, holding CUSHION_MS enqueued, so a frame hitch drains the cushion and not the sound.
+   The tag is handed back (GetReleasedAudioOutBuffers) as soon as its samples are in the ring, which is what lets the guest
+   run ahead of the device instead of being paced by it. 5.1 output is mixed down to stereo (Switch order FL FR FC LFE BL BR).
    NFS_AUDIO=0 keeps the silent real-time sink (each buffer held for its duration) for tests without a sound device. */
 #include "runtime.h"
 #include "ipc.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
+#include <errno.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -15,22 +17,36 @@
 #include <string.h>
 #include <time.h>
 
-enum { STATE_STARTED = 0, STATE_STOPPED = 1, FORMAT_PCM16 = 2, DEFAULT_RATE = 48000, QUEUE_MAX = 32 };
+enum { STATE_STARTED = 0, STATE_STOPPED = 1, FORMAT_PCM16 = 2, DEFAULT_RATE = 48000 };
 /* MONITOR_PERIOD_MS is the longest the sound may stay dead after the output device goes away. */
 enum { MONITOR_PERIOD_MS = 200 };
 /* STALL_TICKS monitor periods a started queue holding data may play nothing before it is rebuilt; the
    recorded trace advances ~9600 frames a period and a queue that has lost its device advances none. */
 enum { STALL_TICKS = 3 };
+/* RING_MS is the cushion between the guest's append and the device: it has to outlast the longest frame
+   hitch measured under GPU submission (166 ms), because the device's own queue holds only ~10 ms.
+   CUSHION_MS is what the feeder keeps enqueued so its own 5 ms wake cannot starve the device. */
+enum { RING_MS = 240, CUSHION_MS = 40 };
+/* RING_BLOCK_MS is how long an append waits for room before it drops its chunk: a guest outrunning the
+   device for longer than this is not a hitch, and blocking its audio thread forever is worse. */
+enum { RING_BLOCK_MS = 200 };
+enum { CHUNK_MAX = 128, RELEASED_MAX = 128 };
 typedef struct { uint64_t next, sample_buffer, capacity, data_size, data_offset; } AudioOutBuffer;   /* the client's descriptor */
 _Static_assert(sizeof(AudioOutBuffer) == 0x28, "AudioOutBuffer");
-typedef struct { uint64_t tag, bytes; } Queued;
 typedef struct {
-    pthread_mutex_t lock; pthread_mutex_t aq_lock; pthread_t thread; int running, silent;
+    pthread_mutex_t lock, aq_lock;
+    pthread_cond_t wake;                               /* ring room or device room: append and the feeder wait here */
+    pthread_t thread, feeder_thread; int running, silent;
     uint32_t rate, channels, state, event; float volume;
     AudioQueueRef aq;
-    Queued queue[QUEUE_MAX]; unsigned nqueue;          /* appended, not yet played (head first) */
-    uint64_t released[QUEUE_MAX]; unsigned nreleased;  /* played, not yet collected by GetReleasedAudioOutBuffers */
-    uint64_t played_samples;
+    int16_t *ring; uint32_t ring_frames;               /* the cushion: stereo PCM between append and the device */
+    uint64_t ring_head, ring_tail;                     /* frames read and written; index = n % ring_frames */
+    uint32_t chunks[CHUNK_MAX]; unsigned chunk_head, chunk_count;   /* one appended buffer's frames, in ring order */
+    uint32_t cushion_frames;                           /* frames the feeder keeps enqueued on the device */
+    uint64_t device_frames; unsigned device_buffers;   /* enqueued on the device, not yet played */
+    int16_t *staging;                                  /* feeder scratch: one chunk, stereo */
+    uint64_t released[RELEASED_MAX]; unsigned nreleased;   /* appended and copied into the ring, not yet collected */
+    uint64_t played_samples, dropped_chunks;
     uint64_t appends;                                  /* NFS_AUDIO_TRACE: appended buffers, and the loudest sample in them */
     unsigned peak_sample;
     uint64_t nz_samples, sum_abs, total_samples;       /* NFS_AUDIO_TRACE: is the appended audio continuous or sparse spikes? */
@@ -39,39 +55,144 @@ typedef struct {
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
 static void need(int ok, const char *what) { if (!ok) runtime_fail(what); }
 
-/* The head of the queue has been played: hand its tag back. Called with the lock held. */
-static void release_head(AudioOut *o) {
-    if (!o->nqueue) return;
-    const Queued head = o->queue[0];
-    memmove(o->queue, o->queue + 1, (--o->nqueue) * sizeof *o->queue);
-    if (o->nreleased < QUEUE_MAX) o->released[o->nreleased++] = head.tag;
-    o->played_samples += head.bytes / (2ull * o->channels);
+static struct timespec deadline_ms(unsigned ms) {
+    struct timespec t; clock_gettime(CLOCK_REALTIME, &t);
+    t.tv_nsec += (long)ms * 1000000L;
+    if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+    return t;
 }
+
+/* Waits up to RING_BLOCK_MS for room for one whole chunk, with the lock held. Chunks are never split,
+   or the device's buffer count would stop lining up with what the guest appended. */
+static int ring_room(AudioOut *o, uint32_t frames) {
+    struct timespec until = deadline_ms(RING_BLOCK_MS);
+    while (o->running && (o->ring_frames - (uint32_t)(o->ring_tail - o->ring_head) < frames || o->chunk_count >= CHUNK_MAX))
+        if (pthread_cond_timedwait(&o->wake, &o->lock, &until) == ETIMEDOUT) break;
+    return o->ring_frames - (uint32_t)(o->ring_tail - o->ring_head) >= frames && o->chunk_count < CHUNK_MAX;
+}
+static void ring_write(AudioOut *o, const int16_t *stereo, uint32_t frames) {
+    uint32_t at = (uint32_t)(o->ring_tail % o->ring_frames);
+    uint32_t first = o->ring_frames - at < frames ? o->ring_frames - at : frames;
+    memcpy(o->ring + 2 * at, stereo, (size_t)first * 4);
+    if (frames > first) memcpy(o->ring, stereo + 2 * first, (size_t)(frames - first) * 4);
+    o->ring_tail += frames;
+}
+static void ring_read(AudioOut *o, int16_t *stereo, uint32_t frames) {
+    uint32_t at = (uint32_t)(o->ring_head % o->ring_frames);
+    uint32_t first = o->ring_frames - at < frames ? o->ring_frames - at : frames;
+    memcpy(stereo, o->ring + 2 * at, (size_t)first * 4);
+    if (frames > first) memcpy(stereo + 2 * first, o->ring, (size_t)(frames - first) * 4);
+    o->ring_head += frames;
+}
+
+/* The device has played a buffer: its samples leave the played count and the device's room comes back. */
 static void played(void *user, AudioQueueRef q, AudioQueueBufferRef b) {   /* Core Audio thread */
     AudioOut *o = user;
     pthread_mutex_lock(&o->aq_lock);
     if (q != o->aq) { pthread_mutex_unlock(&o->aq_lock); return; }   /* a rebuild replaced it: the dispose frees the buffer */
-    pthread_mutex_lock(&o->lock); release_head(o); pthread_mutex_unlock(&o->lock);
+    uint32_t frames = b->mAudioDataByteSize / 4;
+    pthread_mutex_lock(&o->lock);
+    o->played_samples += frames;
+    o->device_frames = o->device_frames > frames ? o->device_frames - frames : 0;
+    if (o->device_buffers) o->device_buffers--;
+    pthread_cond_signal(&o->wake);                /* room on the device: the feeder may send the next chunk */
+    pthread_mutex_unlock(&o->lock);
     AudioQueueFreeBuffer(q, b);
     pthread_mutex_unlock(&o->aq_lock);
-    runtime_event_signal(o->event);
 }
+
+/* Holds CUSHION_MS enqueued on the device from the ring. The guest's frame cadence cannot do this: a
+   GPU frame of 120-166 ms stops its feed for longer than the device queue holds. */
+static void *feeder(void *arg) {
+    AudioOut *o = arg;
+    for (;;) {
+        pthread_mutex_lock(&o->lock);
+        while (o->running && !(o->state == STATE_STARTED && o->chunk_count && o->device_frames < o->cushion_frames)) {
+            struct timespec ts = deadline_ms(5);   /* a lost wake must not wedge the feeder */
+            pthread_cond_timedwait(&o->wake, &o->lock, &ts);
+        }
+        if (!o->running) { pthread_mutex_unlock(&o->lock); return NULL; }
+        uint32_t frames = o->chunks[o->chunk_head];
+        if (o->device_frames && o->device_frames + frames > o->cushion_frames) {   /* over the cushion: wait for the device */
+            struct timespec ts = deadline_ms(5);
+            pthread_cond_timedwait(&o->wake, &o->lock, &ts);
+            pthread_mutex_unlock(&o->lock);
+            continue;
+        }
+        o->chunk_head = (o->chunk_head + 1) % CHUNK_MAX; o->chunk_count--;
+        ring_read(o, o->staging, frames);
+        o->device_frames += frames; o->device_buffers++;
+        pthread_cond_signal(&o->wake);             /* ring room: wake an append that is waiting */
+        pthread_mutex_unlock(&o->lock);
+
+        int queued = 0;
+        pthread_mutex_lock(&o->aq_lock);
+        if (o->aq) {
+            AudioQueueBufferRef qb;
+            if (AudioQueueAllocateBuffer(o->aq, (UInt32)(frames * 4), &qb) == 0) {
+                memcpy(qb->mAudioData, o->staging, (size_t)frames * 4);
+                if (getenv("NFS_AUDIO_TEST")) {   /* a steady tone through this same queue: is the process audible at all? */
+                    static double phase; static unsigned n; int tone = getenv("NFS_AUDIO_TEST")[0] != '2' || !((n++ / 400) & 1);
+                    if (tone) {   /* "2" leaves the game's own samples in every other ~2 s window, for an A/B */
+                        int16_t *pcm = qb->mAudioData;
+                        for (uint32_t i = 0; i < frames; i++) {
+                            int v = (int)(8000.0 * sin(phase));
+                            phase += 2.0 * M_PI * 440.0 / (double)o->rate;
+                            if (phase > 2.0 * M_PI) phase -= 2.0 * M_PI;
+                            pcm[2 * i] = pcm[2 * i + 1] = (int16_t)v;
+                        }
+                    }
+                }
+                if (getenv("NFS_AUDIO_TRACE")) {   /* what actually reaches the device: the downmixed stereo */
+                    const int16_t *s = qb->mAudioData;
+                    unsigned peak = 0; uint64_t nz = 0, sum = 0, n = (uint64_t)frames * 2;
+                    for (uint64_t i = 0; i < n; i++) { int v = s[i]; unsigned a = v < 0 ? (unsigned)-v : (unsigned)v; if (v) nz++; sum += a; if (a > peak) peak = a; }
+                    pthread_mutex_lock(&o->lock);
+                    o->nz_samples += nz; o->sum_abs += sum; o->total_samples += n;
+                    if (peak > o->peak_sample) o->peak_sample = peak;
+                    pthread_mutex_unlock(&o->lock);
+                }
+                qb->mAudioDataByteSize = (UInt32)(frames * 4);
+                if (getenv("NFS_AUDIO_DUMP")) {   /* the exact stereo bytes handed to Core Audio, for offline listening */
+                    static FILE *dump; if (!dump) dump = fopen(getenv("NFS_AUDIO_DUMP"), "wb");
+                    if (dump) fwrite(qb->mAudioData, 1, qb->mAudioDataByteSize, dump);
+                }
+                queued = AudioQueueEnqueueBuffer(o->aq, qb, 0, NULL) == 0;
+            }
+        }
+        pthread_mutex_unlock(&o->aq_lock);
+        if (!queued) {                             /* the queue went away mid-chunk: give the room back and drop it */
+            pthread_mutex_lock(&o->lock);
+            o->device_frames -= frames; o->device_buffers--;
+            pthread_mutex_unlock(&o->lock);
+        }
+    }
+}
+
+/* NFS_AUDIO=0: the ring is drained at each chunk's real duration, so the guest is paced as if playing. */
 static void *silent_playback(void *arg) {
     AudioOut *o = arg; uint64_t due = 0;
     for (;;) {
+        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
         pthread_mutex_lock(&o->lock);
         if (!o->running) { pthread_mutex_unlock(&o->lock); return NULL; }
         uint64_t now = now_ns();
-        if (o->state == STATE_STARTED && o->nqueue) {
-            if (!due) due = now + o->queue[0].bytes / (2ull * o->channels) * 1000000000ull / o->rate;
-            if (now >= due) { release_head(o); due = 0; pthread_mutex_unlock(&o->lock); runtime_event_signal(o->event); continue; }
+        if (o->state == STATE_STARTED && o->chunk_count) {
+            uint32_t frames = o->chunks[o->chunk_head];
+            if (!due) due = now + (uint64_t)frames * 1000000000ull / o->rate;
+            if (now >= due) {
+                o->chunk_head = (o->chunk_head + 1) % CHUNK_MAX; o->chunk_count--;
+                o->ring_head += frames; o->played_samples += frames; due = 0;
+                pthread_cond_signal(&o->wake);
+                pthread_mutex_unlock(&o->lock);
+                continue;
+            }
         } else due = 0;
         pthread_mutex_unlock(&o->lock);
-        struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL);
     }
 }
-/* Reads the system default output device's UID, for diagnostics only: the queue is created on Core
-   Audio's AQDefaultDevice pseudo-device and follows the system default output by itself. */
+/* Reads the system default output device's UID, for the open/rebuild logs and the device trace: the queue is
+   created on Core Audio's AQDefaultDevice pseudo-device and follows the system default output by itself. */
 static CFStringRef default_output_uid(AudioDeviceID *id_out) {
     AudioDeviceID dev = 0; UInt32 size = sizeof dev;
     AudioObjectPropertyAddress a = {kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
@@ -95,32 +216,32 @@ static CFStringRef queue_uid(AudioQueueRef aq) {
 }
 
 /* A queue the monitor cannot see fail: Core Audio leaves IsRunning true while nothing plays. Drop the
-   old queue, build a fresh one on the current default device, and hand the tags it will never play
-   back to the guest as released, or it waits on them forever. */
+   old queue and build a fresh one on the current default device. The ring keeps the audio, so only the
+   cushion the old queue was holding is lost. */
 static void rebuild_queue(AudioOut *o) {
     AudioStreamBasicDescription f = {.mSampleRate = o->rate, .mFormatID = kAudioFormatLinearPCM,
         .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked, .mBytesPerPacket = 4, .mFramesPerPacket = 1,
         .mBytesPerFrame = 4, .mChannelsPerFrame = 2, .mBitsPerChannel = 16};
-    AudioQueueRef old, fresh = NULL; unsigned lost; int made;
+    AudioQueueRef old, fresh = NULL; uint64_t lost; int made;
     pthread_mutex_lock(&o->aq_lock);
-    pthread_mutex_lock(&o->lock);
-    lost = o->nqueue;
-    while (o->nqueue) release_head(o);            /* the old queue is gone: report the tags it will never play */
-    pthread_mutex_unlock(&o->lock);
     old = o->aq;
     made = AudioQueueNewOutput(&f, played, o, NULL, kCFRunLoopCommonModes, 0, &fresh) == 0;
     o->aq = made ? fresh : old;                   /* the old queue keeps serving if no new one can be made */
+    pthread_mutex_lock(&o->lock);
+    lost = o->device_frames;                      /* enqueued on the old queue: its dispose frees it unplayed */
+    o->device_frames = 0; o->device_buffers = 0;
+    pthread_mutex_unlock(&o->lock);
     pthread_mutex_unlock(&o->aq_lock);
     if (!made) { fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing and a new queue could not be made; keeping it\n"); return; }
     {   /* the fresh queue is on the system default output and follows it */
         AudioDeviceID dev = 0; CFStringRef want = default_output_uid(&dev); char b[256];
-        fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing (interruption); rebuilt on the system default output (%u uid %s), %u tag(s) returned\n",
-                (unsigned)dev, uid_text(want, b, sizeof b), lost);
+        fprintf(stderr, "[totk-audio] AudioOut: the output is fed but playing nothing (interruption); rebuilt on the system default output (%u uid %s), %llu frame(s) of cushion dropped\n",
+                (unsigned)dev, uid_text(want, b, sizeof b), (unsigned long long)lost);
         if (want) CFRelease(want);
     }
     if (old) AudioQueueDispose(old, true);        /* no lock held: an in-flight callback sees o->aq changed and frees nothing */
     AudioQueueStart(fresh, NULL);
-    runtime_event_signal(o->event);               /* wake the guest for the returned tags */
+    pthread_mutex_lock(&o->lock); pthread_cond_broadcast(&o->wake); pthread_mutex_unlock(&o->lock);
 }
 
 /* Core Audio stops the queue when its output device goes away — a device change, an interruption,
@@ -133,10 +254,12 @@ static void *device_monitor(void *arg) {
         nanosleep(&ts, NULL);
         pthread_mutex_lock(&o->lock);
         int alive = o->running, started = o->state == STATE_STARTED;
-        unsigned queued = o->nqueue; uint64_t played = o->played_samples;
+        unsigned queued = o->chunk_count + o->device_buffers; uint64_t played = o->played_samples;
+        unsigned long long ring_ms = (unsigned long long)((o->ring_tail - o->ring_head) * 1000ull / o->rate);
+        unsigned long long dev_ms = (unsigned long long)(o->device_frames * 1000ull / o->rate);
         if (trace && ++ticks % 10 == 0) {                         /* every ~2 s: is the guest feeding real audio, and is it draining? */
-            fprintf(stderr, "[nfs] audout trace: appends=%llu peak=%u played=%llu queued=%u vol=%g nonzero=%llu/%llu mean=%.0f\n",
-                    (unsigned long long)o->appends, o->peak_sample, (unsigned long long)o->played_samples, o->nqueue, o->volume,
+            fprintf(stderr, "[nfs] audout trace: appends=%llu peak=%u played=%llu ring=%llums dev=%llums queued=%u vol=%g nonzero=%llu/%llu mean=%.0f\n",
+                    (unsigned long long)o->appends, o->peak_sample, (unsigned long long)o->played_samples, ring_ms, dev_ms, queued, o->volume,
                     (unsigned long long)o->nz_samples, (unsigned long long)o->total_samples,
                     o->total_samples ? (double)o->sum_abs / (double)o->total_samples : 0.0);
             o->peak_sample = 0; o->nz_samples = 0; o->sum_abs = 0; o->total_samples = 0;
@@ -177,6 +300,11 @@ static void *device_monitor(void *arg) {
 static void open_device(AudioOut *o) {
     const char *e = getenv("NFS_AUDIO");
     o->silent = e && !strcmp(e, "0");
+    o->ring_frames = (uint32_t)((uint64_t)o->rate * RING_MS / 1000);
+    o->cushion_frames = (uint32_t)((uint64_t)o->rate * CUSHION_MS / 1000);
+    o->ring = calloc((size_t)o->ring_frames * 2, sizeof(int16_t));
+    o->staging = malloc((size_t)o->ring_frames * 4);
+    need(o->ring && o->staging, "AudioOut ring");
     if (!o->silent) {
         AudioStreamBasicDescription f = {.mSampleRate = o->rate, .mFormatID = kAudioFormatLinearPCM,
             .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked, .mBytesPerPacket = 4, .mFramesPerPacket = 1,
@@ -195,6 +323,7 @@ static void open_device(AudioOut *o) {
         pthread_mutex_unlock(&o->aq_lock);
     }
     need(pthread_create(&o->thread, NULL, o->silent ? silent_playback : device_monitor, o) == 0, "AudioOut playback thread");
+    if (!o->silent) need(pthread_create(&o->feeder_thread, NULL, feeder, o) == 0, "AudioOut feeder thread");
 }
 /* Interleaved PCM16 of the client's layout -> stereo PCM16 (the queue's format). */
 static void to_stereo(const int16_t *in, int16_t *out, uint64_t frames, uint32_t channels) {
@@ -238,46 +367,33 @@ static void append(AudioOut *o, const IpcRequest *rq) {
                 (unsigned long long)d.capacity, rq->cmd, (unsigned long long)tag);
         runtime_fail("AudioOut buffer bounds");
     }
-    pthread_mutex_lock(&o->aq_lock);              /* the monitor rebuilds the queue under this lock */
+    uint64_t frames64 = d.data_size / (2ull * o->channels);
+    need(frames64 <= 0xffffffffull, "AudioOut buffer size");
+    uint32_t frames = (uint32_t)frames64;
+    int16_t *mix = frames ? malloc((size_t)frames * 4) : NULL;
+    need(!frames || mix, "AudioOut mix buffer");
+    if (frames) to_stereo(ipc_guest(d.sample_buffer + offset, d.data_size), mix, frames, o->channels);
+
     pthread_mutex_lock(&o->lock);
-    need(o->nqueue < QUEUE_MAX, "AudioOut queue full");
-    o->queue[o->nqueue++] = (Queued){tag, d.data_size};
     o->appends++;
-    pthread_mutex_unlock(&o->lock);
-    if (o->silent) { pthread_mutex_unlock(&o->aq_lock); return; }
-    uint64_t frames = d.data_size / (2ull * o->channels);
-    AudioQueueBufferRef qb;
-    need(AudioQueueAllocateBuffer(o->aq, (UInt32)(frames * 4 ? frames * 4 : 4), &qb) == 0, "AudioOut queue buffer");
-    to_stereo(ipc_guest(d.sample_buffer + offset, d.data_size), qb->mAudioData, frames, o->channels);
-    if (getenv("NFS_AUDIO_TEST") && frames) {   /* a steady tone through this same queue: is the process audible at all? */
-        static double phase; static unsigned n; int tone = getenv("NFS_AUDIO_TEST")[0] != '2' || !((n++ / 400) & 1);
-        if (tone) {   /* "2" leaves the game's own samples in every other ~2 s window, for an A/B */
-            int16_t *pcm = qb->mAudioData;
-            for (uint64_t i = 0; i < frames; i++) {
-                int v = (int)(8000.0 * sin(phase));
-                phase += 2.0 * M_PI * 440.0 / (double)o->rate;
-                if (phase > 2.0 * M_PI) phase -= 2.0 * M_PI;
-                pcm[2 * i] = pcm[2 * i + 1] = (int16_t)v;
-            }
+    if (frames) {
+        if (frames <= o->ring_frames && ring_room(o, frames)) {
+            ring_write(o, mix, frames);
+            o->chunks[(o->chunk_head + o->chunk_count) % CHUNK_MAX] = frames; o->chunk_count++;
+            pthread_cond_signal(&o->wake);         /* the feeder has a chunk to send */
+        } else {                                   /* the guest outran the ring for RING_BLOCK_MS: drop, do not wedge it */
+            o->dropped_chunks++;
+            static unsigned drops;
+            if (drops++ < 4)
+                fprintf(stderr, "[nfs] audout: no ring room for %d ms; dropped a %u-frame buffer (%llu dropped)\n",
+                        RING_BLOCK_MS, frames, (unsigned long long)o->dropped_chunks);
         }
     }
-    if (getenv("NFS_AUDIO_TRACE") && frames) {   /* what actually reaches the device: the downmixed stereo */
-        const int16_t *s = qb->mAudioData;
-        unsigned peak = 0; uint64_t nz = 0, sum = 0, n = frames * 2;
-        for (uint64_t i = 0; i < n; i++) { int v = s[i]; unsigned a = v < 0 ? (unsigned)-v : (unsigned)v; if (v) nz++; sum += a; if (a > peak) peak = a; }
-        pthread_mutex_lock(&o->lock);
-        o->nz_samples += nz; o->sum_abs += sum; o->total_samples += n;
-        if (peak > o->peak_sample) o->peak_sample = peak;
-        pthread_mutex_unlock(&o->lock);
-    }
-    qb->mAudioDataByteSize = (UInt32)(frames * 4);
-    if (!frames) { memset(qb->mAudioData, 0, 4); qb->mAudioDataByteSize = 4; }   /* an empty buffer still has to come back */
-    if (getenv("NFS_AUDIO_DUMP")) {   /* the exact stereo bytes handed to Core Audio, for offline listening */
-        static FILE *dump; if (!dump) dump = fopen(getenv("NFS_AUDIO_DUMP"), "wb");
-        if (dump) fwrite(qb->mAudioData, 1, qb->mAudioDataByteSize, dump);
-    }
-    need(AudioQueueEnqueueBuffer(o->aq, qb, 0, NULL) == 0, "AudioOut enqueue");
-    pthread_mutex_unlock(&o->aq_lock);
+    need(o->nreleased < RELEASED_MAX, "AudioOut released tags");
+    o->released[o->nreleased++] = tag;             /* its samples are in the ring: the guest may reuse it */
+    pthread_mutex_unlock(&o->lock);
+    free(mix);
+    runtime_event_signal(o->event);                /* the tag is back */
 }
 static void released(AudioOut *o, const IpcRequest *rq, IpcResponse *rs) {
     int pointer; const IpcBuffer *b = out_buffer(rq, &pointer); need(b != NULL, "GetReleasedAudioOutBuffers buffer");
@@ -291,7 +407,7 @@ static void released(AudioOut *o, const IpcRequest *rq, IpcResponse *rs) {
     IPC_OUT(rs, n);
 }
 static void set_state(AudioOut *o, uint32_t state) {
-    pthread_mutex_lock(&o->lock); o->state = state; pthread_mutex_unlock(&o->lock);
+    pthread_mutex_lock(&o->lock); o->state = state; pthread_cond_broadcast(&o->wake); pthread_mutex_unlock(&o->lock);
     pthread_mutex_lock(&o->aq_lock);
     if (o->aq) { if (state == STATE_STARTED) AudioQueueStart(o->aq, NULL); else AudioQueuePause(o->aq); }
     pthread_mutex_unlock(&o->aq_lock);
@@ -308,19 +424,21 @@ static void audio_out_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
     case 6: {                                                                                   /* ContainsAudioOutBuffer(tag) */
         uint64_t tag = IPC_ARG(rq, uint64_t, 0); uint8_t found = 0;
         pthread_mutex_lock(&o->lock);
-        for (unsigned i = 0; i < o->nqueue; i++) found |= o->queue[i].tag == tag;
         for (unsigned i = 0; i < o->nreleased; i++) found |= o->released[i] == tag;
         pthread_mutex_unlock(&o->lock); IPC_OUT(rs, found); return;
     }
-    case 9: { pthread_mutex_lock(&o->lock); uint32_t v = o->nqueue; pthread_mutex_unlock(&o->lock); IPC_OUT(rs, v); return; }   /* GetAudioOutBufferCount */
+    case 9: { pthread_mutex_lock(&o->lock); uint32_t v = o->chunk_count + o->device_buffers; pthread_mutex_unlock(&o->lock); IPC_OUT(rs, v); return; }   /* GetAudioOutBufferCount */
     case 10: { pthread_mutex_lock(&o->lock); uint64_t v = o->played_samples; pthread_mutex_unlock(&o->lock); IPC_OUT(rs, v); return; }   /* GetAudioOutPlayedSampleCount */
     case 11: {                                                                                  /* FlushAudioOutBuffers */
-        pthread_mutex_lock(&o->lock); uint8_t any = o->nqueue != 0; unsigned n = o->nqueue;
-        while (o->nqueue) release_head(o);
+        pthread_mutex_lock(&o->lock);
+        uint8_t any = o->chunk_count || o->device_buffers; unsigned n = o->chunk_count + o->device_buffers;
+        o->ring_head = o->ring_tail; o->chunk_count = 0; o->chunk_head = 0;
+        pthread_cond_broadcast(&o->wake);
         pthread_mutex_unlock(&o->lock);
         fprintf(stderr, "[nfs] audout: Flush (%u queued)\n", n);
-        pthread_mutex_lock(&o->aq_lock); if (o->aq) AudioQueueReset(o->aq); pthread_mutex_unlock(&o->aq_lock);   /* its callbacks then find nothing left to release */
-        if (any) runtime_event_signal(o->event);
+        pthread_mutex_lock(&o->aq_lock); if (o->aq) AudioQueueReset(o->aq);   /* its callbacks then find nothing left to play */
+        pthread_mutex_lock(&o->lock); o->device_frames = 0; o->device_buffers = 0; pthread_mutex_unlock(&o->lock);
+        pthread_mutex_unlock(&o->aq_lock);
         IPC_OUT(rs, any); return;
     }
     case 12: o->volume = IPC_ARG(rq, float, 0); if (o->aq) AudioQueueSetParameter(o->aq, kAudioQueueParam_Volume, o->volume);
@@ -332,11 +450,13 @@ static void audio_out_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
 static void audio_out_close(void *p) {
     AudioOut *o = p;
     fprintf(stderr, "[nfs] audout: Close\n");
-    pthread_mutex_lock(&o->lock); o->running = 0; pthread_mutex_unlock(&o->lock);
+    pthread_mutex_lock(&o->lock); o->running = 0; pthread_cond_broadcast(&o->wake); pthread_mutex_unlock(&o->lock);
     pthread_join(o->thread, NULL);                 /* the monitor must be gone before the queue is disposed */
+    if (!o->silent) pthread_join(o->feeder_thread, NULL);
     pthread_mutex_lock(&o->aq_lock); AudioQueueRef aq = o->aq; o->aq = NULL; pthread_mutex_unlock(&o->aq_lock);
     if (aq) AudioQueueDispose(aq, true);
-    pthread_mutex_destroy(&o->lock); pthread_mutex_destroy(&o->aq_lock); free(o);
+    pthread_mutex_destroy(&o->lock); pthread_mutex_destroy(&o->aq_lock); pthread_cond_destroy(&o->wake);
+    free(o->ring); free(o->staging); free(o);
 }
 
 static const char device_name[] = "DeviceOut";
@@ -358,7 +478,7 @@ static void manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs
             fprintf(stderr, "[totk-audio] OpenAudioOut %u Hz x%u\n", rate, channels); runtime_fail("AudioOut format not supported");
         }
         AudioOut *o = calloc(1, sizeof *o); need(o != NULL, "AudioOut allocation");
-        pthread_mutex_init(&o->lock, NULL); pthread_mutex_init(&o->aq_lock, NULL); o->rate = rate; o->channels = channels; o->state = STATE_STOPPED; o->volume = 1.0f;
+        pthread_mutex_init(&o->lock, NULL); pthread_mutex_init(&o->aq_lock, NULL); pthread_cond_init(&o->wake, NULL); o->rate = rate; o->channels = channels; o->state = STATE_STOPPED; o->volume = 1.0f;
         o->event = runtime_event_new(); o->running = 1;
         open_device(o);
         write_name(rq, rs);
