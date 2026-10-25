@@ -28,7 +28,7 @@ Nothing. S3.3b closed at the shading stage and S3.3d is next: the race's surface
 
 ## Queued
 
-The remaining work was re-sliced on 2026-10-23 into 15 units. Each is planned at 160k tokens; a tight unit may reach 170k, and a unit whose brief plus touched files exceeds 170k is split before work. S5 is provisional and must be re-sliced at entry. S0–S2, S3.1a–S3.1d, S3.2a, S3.3a and S3.3b are complete and are recorded in the sections below.
+The remaining work was re-sliced on 2026-10-23 into 15 units. Each is planned at 160k tokens; a unit may reach the **195k ceiling**, and a unit whose brief plus touched files exceeds 195k is split before work. S5 is provisional and must be re-sliced at entry. S0–S2, S3.1a–S3.1d, S3.2a, S3.3a and S3.3b are complete and are recorded in the sections below.
 
 - S3.1b — Reproduce the `pctl` open and answer the family. **COMPLETE**: the reply carries the object the SDK reads, and the windowed boot proceeds past `sdk+0x3489dc`.
 - S2.24 — Enable the mid-pass depth-stencil clear. **COMPLETE**: the probe passed (6144 checks) and the operator's `TOTK_GPU_MIDCLEAR=1` run reached a controllable frame and attempted to play, with no crash report.
@@ -39,10 +39,10 @@ The remaining work was re-sliced on 2026-10-23 into 15 units. Each is planned at
 - S3.1d — Save round-trip: verify the write/read path and that the game proceeds past the notice. **COMPLETE**: a repo-built windowed boot reads `save:/MUD64.8` through the `nn::fs` `save:` mount and reaches the main menu; the `savedata` IPC family is unused (main imports no `nn::ns`).
 - S3.2a — Inventory every `sm` open after saves; classify implemented vs absent. (90k) **COMPLETE**: six windowed boots past the save mount open no `sm` service after it; the only opens are `hid`, `friend:u`, `audout:u`, all before the mount; no absent name was asked.
 - S3.2b — Movies and the offline services the inventory names. **WITHDRAWN**: the inventory names no offline service, so there is nothing to implement; movie playback is a visual check inside S3.3, not a service slice.
-- S3.2c — Remaining S3.2 services; split before work if the inventory exceeds 170k. (150k)
+- S3.2c — Remaining S3.2 services; split before work if the inventory exceeds 195k. (150k)
 - S3.3a — Reach the first controllable frame (menus → race start). **COMPLETE**: a repo-built windowed boot reaches the race and the car is drivable (operator run to 5100 frames / 174 s; `12-race-a.png`). Navigation needs a cadence, not per-screen sleeps, and SELECT COLOR answers Ⓨ.
 - S3.3b — Make real-time 3D sample its textures. **COMPLETE**: the stop is the shading stage, not upload, handle resolution or sampling — one race frame has the textures in the G-buffer (`f-700.png`) and every shaded target black (`f-1000.png`, `f-7600.png`, `f-4400.png`), with 0 dummy-resolved binds across the race and the shadow atlas rendered and comparison-sampled.
-- S3.3d — Restore surface radiance: name the zero term in the shading math and fix it. (160k, tight 170k) **Moved ahead of S3.3c** because nothing about the port can be looked at until the race is lit.
+- S3.3d — Restore surface radiance: name the zero term in the shading math and fix it. (160k, tight 195k) **Moved ahead of S3.3c** because nothing about the port can be looked at until the race is lit.
 - S3.3c — Save/load across a race; verify persisted state. (150k)
 - S4.1a — Package the `.app` (`build_app.py` app step, bundle, icon). (160k)
 - S4.1b — Packaged-app smoke: launch from bundle, no dev-tree dependency. (120k)
