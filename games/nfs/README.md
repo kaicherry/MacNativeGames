@@ -31,6 +31,11 @@ A dev-tree boot carries no shader seed, so every variant it meets is compiled on
 601 compiled on demand` before and `601 loaded precompiled, 0 compiled on demand` after. The cache fills during a
 boot, so the first boot in a fresh tree compiles as before; this has something to compile from the second.
 
+A packaged app gets those libraries only if the work tree's cache is filled before the build: `build_app.py` runs
+`make shader-libs` over `<work>/nfs/build/shader-cache/rt-<chain>`, so copy a played app's cache
+(`~/Library/Application Support/MacNativeGames/NFS/shader-cache/rt-<chain>`) there and rebuild — the app then logs
+`601 loaded precompiled, 0 compiled on demand` instead of compiling its first frame.
+
 Status: the loader boot is being brought up. No gameplay claim is made. The shader translator is carried in
 `prebuilt/macos-arm64/` and `make boot` builds it (with `build/spirv-cross/spirv-cross`) so the headless boot can
 translate shaders. `build_app.py` assembles the Mac app (`step_app_nfs`): it builds the runtime and the launcher here,

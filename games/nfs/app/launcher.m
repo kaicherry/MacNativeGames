@@ -118,6 +118,15 @@ int main(int argc, char **argv) {
         setenv("TOTK_GPU_MIDCLEAR", "1", 1);
         setenv("TOTK_GPU_BUDGET_MB", "5000", 1);
         setenv("DM_PRESENT_LINK_FALLBACK", "1", 1);   // keep presenting when macOS pauses the display link for a window it thinks covered
+        /* A packaged app starts clean: the FPS, shader and load readouts and the corner panel are developer
+           measurements. Key 1 brings the control hints back; an environment that names these still wins. */
+        setenv("TOTK_FPS_OVERLAY", "0", 0);
+        setenv("TOTK_SHADER_OVERLAY", "0", 0);
+        setenv("TOTK_LOAD_OVERLAY", "0", 0);
+        setenv("NFS_HUD", "0", 0);
+        /* NFSFullscreen (defaults write org.macnativegames.nfs NFSFullscreen -bool true): start in macOS full screen,
+           which is also what turns Game Mode on (LSSupportsGameMode in Info.plist). */
+        if ([NSUserDefaults.standardUserDefaults boolForKey:@"NFSFullscreen"]) setenv("NFS_FULLSCREEN", "1", 1);
         setenv("TOTK_SLOT_OWNER", "user", 0);
         setenv("TOTK_SLOT_PURPOSE", "player", 0);
         unsetenv("TOTK_HEADLESS");

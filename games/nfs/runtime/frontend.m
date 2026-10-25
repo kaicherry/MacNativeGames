@@ -249,6 +249,8 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
+  /* NFS_HUD=0 (the packaged app's default, app/launcher.m): start with the panel hidden; key 1 shows it. */
+  {const char *hud=getenv("NFS_HUD");if(hud&&!strcmp(hud,"0"))runtime_shortcut_help_toggle();}
   /* The FPS, shader and load lines: in the corner panel above (compact HUD), or with TOTK_HUD=corners drawn into the game picture's corners by the present encoder (gfx/nvn/fps_overlay.c). */
   [window makeFirstResponder:window.contentView];
   {NSRect f=window.frame;f.origin.x=NSMidX(vis)-f.size.width/2;f.origin.y=NSMidY(vis)-f.size.height/2;[window setFrame:f display:NO];}   /* centred on the chosen screen */

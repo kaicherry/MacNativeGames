@@ -218,6 +218,30 @@ static CFStringRef queue_uid(AudioQueueRef aq) {
 /* A queue the monitor cannot see fail: Core Audio leaves IsRunning true while nothing plays. Drop the
    old queue and build a fresh one on the current default device. The ring keeps the audio, so only the
    cushion the old queue was holding is lost. */
+/* Bind the queue to the system default output's device UID. A queue created on Core Audio's AQDefaultDevice pseudo-device
+   can report IsRunning with samples advancing and still be heard nowhere (S2.21 measured this), so the device is named
+   explicitly and renamed whenever the default changes. Returns 0 when nothing had to change. */
+static int bind_default_device(AudioOut *o) {
+    AudioDeviceID dev = 0; CFStringRef want = default_output_uid(&dev);
+    if (!want) return 1;   /* no default output right now: the monitor tries again */
+    int changed = 0;
+    pthread_mutex_lock(&o->aq_lock);
+    if (o->aq) {
+        CFStringRef have = queue_uid(o->aq);
+        changed = !have || !CFEqual(have, want);
+        if (changed) {
+            char b[256];
+            OSStatus s = AudioQueueSetProperty(o->aq, kAudioQueueProperty_CurrentDevice, &want, sizeof want);
+            fprintf(stderr, "[totk-audio] AudioOut: bound to the system default output %u uid %s -> %d\n",
+                    (unsigned)dev, uid_text(want, b, sizeof b), (int)s);
+        }
+        if (have) CFRelease(have);
+    }
+    pthread_mutex_unlock(&o->aq_lock);
+    CFRelease(want);
+    return changed;
+}
+
 static void rebuild_queue(AudioOut *o) {
     AudioStreamBasicDescription f = {.mSampleRate = o->rate, .mFormatID = kAudioFormatLinearPCM,
         .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked, .mBytesPerPacket = 4, .mFramesPerPacket = 1,
@@ -239,6 +263,7 @@ static void rebuild_queue(AudioOut *o) {
                 (unsigned)dev, uid_text(want, b, sizeof b), (unsigned long long)lost);
         if (want) CFRelease(want);
     }
+    bind_default_device(o);                       /* the fresh queue is bound to the default output, not the pseudo-device */
     if (old) AudioQueueDispose(old, true);        /* no lock held: an in-flight callback sees o->aq changed and frees nothing */
     AudioQueueStart(fresh, NULL);
     pthread_mutex_lock(&o->lock); pthread_cond_broadcast(&o->wake); pthread_mutex_unlock(&o->lock);
@@ -266,6 +291,7 @@ static void *device_monitor(void *arg) {
         }
         pthread_mutex_unlock(&o->lock);
         if (!alive) return NULL;
+        bind_default_device(o);   /* a default-output change moves the queue with it */
         if (trace && ticks % 10 == 0) {   /* which device the system default is, whether it is running, and what the queue is on */
             AudioDeviceID d = 0; CFStringRef u = default_output_uid(&d); char b[256], q[256];
             AudioObjectPropertyAddress r = {kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
@@ -321,6 +347,7 @@ static void open_device(AudioOut *o) {
             if (want) CFRelease(want);
         }
         pthread_mutex_unlock(&o->aq_lock);
+        if (!o->silent) bind_default_device(o);   /* outside aq_lock: binding takes it */
     }
     need(pthread_create(&o->thread, NULL, o->silent ? silent_playback : device_monitor, o) == 0, "AudioOut playback thread");
     if (!o->silent) need(pthread_create(&o->feeder_thread, NULL, feeder, o) == 0, "AudioOut feeder thread");
