@@ -1093,7 +1093,7 @@ def remove_tree(path):
     shutil.rmtree(path)
 
 
-def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID):
+def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID, display_version=None):
     """The RomFS image (16 GB) as a bundle of its own, signed once and kept in the work folder (build/data-bundles). The
     app carries a clone of it in Contents/Helpers, and the app's seal records only its signature: sealing the image
     inside the app hashed all 16 GB on every packaging (88 s on an M4 Mac mini, 2026-10-20), now only when the image
@@ -1117,7 +1117,7 @@ def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID):
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier=f'{bundle_id}.data.{version}', CFBundleName='Game data', CFBundlePackageType='BNDL',
-        CFBundleShortVersionString=VERSIONS[version]['display_version'], CFBundleVersion='1')))
+        CFBundleShortVersionString=display_version or VERSIONS[version]['display_version'], CFBundleVersion='1')))
     run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-data-{version}.log')
     # Checked once here, where the 16 GB are hashed anyway; an app carrying this bundle checks only its own seal (which
     # records this bundle's signature), not --deep (55 s on each packaging, 2026-10-21).
@@ -1641,6 +1641,61 @@ def step_data_nfs(tree, nfs, game, keys, logs, *, firmware=None, shared_fonts=No
         validate_fonts(fonts, expected)
 
 
+NFS_MODULES = ('rtld', 'main', 'sdk', 'subsdk0', 'subsdk1')
+
+
+def nfs_app_files(version='nfs100'):
+    """What the packaged app carries from the work tree, relative to it: the load set the loader reads by path and the
+    RomFS index. The RomFS image itself is the signed data bundle, linked into extracted/<version>/romfs/romfs.bin."""
+    return ([f'rewritten/{version}/{name}.patched.bin' for name in NFS_MODULES] +
+            [f'extracted/{version}/exefs/main.npdm', f'extracted/{version}/romfs/runtime-index.bin'])
+
+
+def step_app_nfs(nfs, out, logs, *, env):
+    """Assemble the Mac app for Need for Speed: build the runtime and the launcher in the work tree, copy the load set,
+    the shared fonts, the shader translator and the shader libraries into Contents/Resources/nfs, sign the RomFS image
+    as a data bundle of its own, and seal the app. The launcher chdirs there, so no path inside the app names the work
+    tree, and the game writes its shader cache, profile and logs outside the bundle (games/nfs/app/launcher.m)."""
+    version, expected = 'nfs100', NFS100
+    app_name, bundle_id, executable = APPS['nfs']
+    say('4/4 app: building the runtime and the shader translator')
+    # WORK=. : the work tree is this folder (extracted/ and rewritten/ beside it), so build/ is what the app carries.
+    run(['make', 'WORK=.', 'prepare', 'runtime', 'shader-tools', 'shader-libs'], logs / 'make-nfs.log', cwd=nfs, env=env)
+    run(['make', 'WORK=.', 'launcher'], logs / 'launcher-nfs.log', cwd=nfs, env=env)
+    tmp = out.with_name(out.name + '.partial')
+    if tmp.exists():
+        remove_tree(tmp)
+    res = tmp / 'Contents/Resources/nfs'   # the launcher's game folder (app/launcher.m)
+    for rel in ('build/nfs-native', 'build/shader-service/totk_xlate', 'build/spirv-cross/spirv-cross'):
+        clone(nfs / rel, res / rel)
+    for rel in nfs_app_files(version):
+        clone(nfs / rel, res / rel)
+    for rel in ('build/shader-libs', 'extracted/firmware/shared-fonts'):   # absent when nothing met a shader yet
+        if (nfs / rel).is_dir():
+            copy_tree(nfs / rel, res / rel)
+    place_data_bundle(data_bundle(nfs, version, logs, bundle_id=bundle_id, display_version=expected['display_version']),
+                      tmp, res, version)
+    clone(nfs / 'build/app-launcher', tmp / f'Contents/MacOS/{executable}')
+    info = dict(CFBundleDevelopmentRegion='en', CFBundleExecutable=executable, CFBundleIdentifier=bundle_id, CFBundleName=app_name,
+                CFBundleDisplayName=app_name, CFBundlePackageType='APPL', CFBundleShortVersionString=expected['display_version'],
+                CFBundleVersion=str(expected['version'] + 1), LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
+                LSApplicationCategoryType='public.app-category.racing-games', LSSupportsGameMode=True,
+                GCSupportsControllerUserInteraction=True)
+    import plistlib
+    (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
+    sign_app(tmp, logs)   # A failed seal must not remove the previous working app.
+    old_binary = out / 'Contents/Resources/nfs/build/nfs-native'
+    while old_binary.is_file():
+        # Preparing and signing a replacement is safe while playing; replacing a running game's folder is not.
+        processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
+        if str(old_binary.resolve()) not in (p.strip() for p in processes):
+            break
+        time.sleep(2)
+    if install_app(tmp, out):
+        say('4/4 app: the game data is unchanged; kept the installed copy, so the first start need not verify it again')
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild base + separate 1.6.0 update, or a combined card image.',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
@@ -1741,10 +1796,18 @@ def main(argv):
         say(f'Need for Speed Hot Pursuit Remastered {NFS100["display_version"]} (by the title IDs in the game file); work folder {work}')
         step_code_nfs(tree, nfs, game, keys, env, logs)
         step_data_nfs(tree, nfs, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts)
-        say(f'done in {(time.time() - t0) / 60:.0f} min: the code and data are rebuilt from the game file and every file '
-            f'is checked against games/nfs/assets/expected-v1.0.0.json (work folder {work})')
-        say('App assembly is not wired for this title yet; the runtime is prepared, built and run from the work folder '
-            '(games/nfs/README.md: make prepare / runtime / boot).')
+        say(f'4/4 app: assembling {out}')
+        step_app_nfs(nfs, out, logs, env=env)
+        run([LSREGISTER, '-f', out], logs / 'register-app.log')
+        say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
+        t1 = time.time()
+        r = subprocess.run([out / f'Contents/MacOS/{APPS["nfs"][2]}', '--check'], capture_output=True, text=True, timeout=1800)
+        if r.returncode:
+            raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
+        say(f'   checked in {time.time() - t1:.0f} s')
+        say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
+        say('Open it from Finder. Saves, the shader cache and the log go to ~/Library/Application Support/MacNativeGames/NFS '
+            'and ~/Library/Logs/MacNativeGames/nfs.log; the first start verifies the game data and keeps a record of it.')
         return
     if which == 'botw':
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build

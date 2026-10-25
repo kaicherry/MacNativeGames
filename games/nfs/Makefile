@@ -6,8 +6,8 @@
 #   make prepare   # scripts/prepare_runtime.py: tables, RomFS index, fonts config
 #   make runtime   # NFS_build/build/nfs-native
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)
-# The launcher bundle is not wired yet; it arrives with the app-assembly slice. The shader translator is carried
-# (prebuilt/) and make boot builds it (shader-tools) so the headless boot can translate its first shaders.
+# The app's launcher (app/launcher.m) is compiled by build_app.py for Contents/MacOS/NFS; the target below builds the
+# same program in the work tree, for checking the source without assembling a bundle.
 
 WORK ?= NFS_build
 OUT := $(WORK)/build
@@ -43,6 +43,16 @@ $(OUT)/nfs-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS)
 	  -framework AudioToolbox -framework CoreAudio -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 
 runtime: $(OUT)/nfs-native
+
+# The launcher inside the packaged app (Contents/MacOS/NFS). build_app.py compiles this same source into the bundle;
+# the target here compiles it in the work tree, so the source can be checked without assembling one.
+$(OUT)/app-launcher: app/launcher.m runtime/game_version.h third_party/d2r_gfx/gfx/nvn/dmsh_chain.h
+	@mkdir -p "$(dir $@)"
+	xcrun clang -fobjc-arc -O2 -Wall -Ithird_party/d2r_gfx/gfx/nvn -Iruntime app/launcher.m \
+	  -framework AppKit -framework Foundation -o "$@"
+
+.PHONY: launcher
+launcher: $(OUT)/app-launcher
 
 # The runtime shader translation the graphics layer starts on first use: <work>/build/shader-service/totk_xlate (the
 # repository's prebuilt NativeAOT translator, checked against its SHA-256) and <work>/build/spirv-cross/spirv-cross,

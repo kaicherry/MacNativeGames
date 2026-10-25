@@ -9,9 +9,12 @@ Every build input is checked against `assets/expected-v1.0.0.json` first — the
 images, the RomFS image, and the six shared-font reference pins. The manifest is the authority; a value is never
 re-derived here.
 
-Build and boot (the root `build_app.py` drives the code/data steps from the original NSP):
+Build and boot (the root `build_app.py` drives the code and data steps from the original NSP, then assembles the app):
 
     python3 build_app.py <game.nsp> -k <prod.keys> --firmware <unpacked firmware> --work <work>
+
+The work-tree loop for a runtime change:
+
     make -C games/nfs WORK=<work>/nfs prepare
     make -C games/nfs WORK=<work>/nfs runtime
     make -C games/nfs WORK=<work>/nfs shader-libs   # compile the runtime shader cache ahead of the boot
@@ -30,4 +33,6 @@ boot, so the first boot in a fresh tree compiles as before; this has something t
 
 Status: the loader boot is being brought up. No gameplay claim is made. The shader translator is carried in
 `prebuilt/macos-arm64/` and `make boot` builds it (with `build/spirv-cross/spirv-cross`) so the headless boot can
-translate shaders; the launcher bundle is not wired yet (it arrives with the app-assembly slice).
+translate shaders. `build_app.py` assembles the Mac app (`step_app_nfs`): it builds the runtime and the launcher here,
+then copies the load set, the shared fonts, the translator and `build/shader-libs` into `Contents/Resources/nfs`, and
+compiles `app/launcher.m` as `Contents/MacOS/NFS`.

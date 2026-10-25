@@ -6,4 +6,6 @@
 #define GAME_NFS 1
 #define TOTK_GAME_VERSION "1.0.0"
 #define TOTK_GAME_DIR "nfs100"
+#define GAME_FOLDER "NFS"   /* ~/Library/Application Support/MacNativeGames/<GAME_FOLDER> (app/launcher.m) */
+#define GAME_LOG "nfs"      /* ~/Library/Logs/MacNativeGames/<GAME_LOG>.log */
 #define GAME_TITLE_ID 0x010029b0118e8000ULL

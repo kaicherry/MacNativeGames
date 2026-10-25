@@ -196,8 +196,11 @@ def shared_fonts_config(work, out):
         rows = []
         for f in manifest['fonts']:
             path = folder / f"{f['type']}-{f['name']}.bfttf"
+            # Relative to the working directory the runtime runs in (the work tree, or the app's Contents/Resources/nfs):
+            # an absolute path here would name this build machine inside the bundled binary.
+            rel = f'extracted/firmware/shared-fonts/{path.name}'
             assert path.stat().st_size == f['bfttf_bytes'] == f['font_bytes'] + 8
-            rows.append(f'{{"{path}",{f["bfttf_bytes"]}ULL,{f["font_bytes"]}ULL,"{f["sha256"]}"}}')
+            rows.append(f'{{"{rel}",{f["bfttf_bytes"]}ULL,{f["font_bytes"]}ULL,"{f["sha256"]}"}}')
         state = 'loaded from ' + str(folder)
     (out / 'shared_fonts_config.h').write_text('#define SHARED_FONT_COUNT 6\n#define SHARED_FONT_ROWS ' + ','.join(rows) + '\n')
     return state
