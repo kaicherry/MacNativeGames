@@ -1,98 +1,83 @@
 ---
-slice: S3.3f
+slice: S3.3g
 stateFile: docs/STATE.md
-donotCount: 35
-seededFrom: the S3.3e close (the pass and the target are named; the draw, the texture and a removing switch are not)
+donotCount: 36
+seededFrom: the S3.3f close (the draw is named; which binding of it returns 0 is not)
 plannedTokens: 120000
 ---
-# Next slice — S3.3f: bisect the forward pass to the draw that writes the squares
+# Next slice — S3.3g: name the binding through which the fullscreen resolve writes the zero
 
 ## The next action
 
-S3.3f — Bisect the forward scene pass to the draw that writes the squares. The pass is `543889` in frame 8840 of
-`.babysteps/scratch/S3.3d-constants/boot-race6.log`: 330 draws, 36 distinct fragment keys, writing ser 10 and ser 5,
-sampling ser 44 and the shadow atlas ser 53. `games/nfs/scripts/frame_attribution.py chain <boot.log>` prints that pass
-list and `rank <capture.png> <texdump-dir>` names which dumped target first carries the blocks, so a run is judged by
-one command. Take the keys from the pass, group them, and use the two environment switches that need no rebuild:
-`TOTK_GPU_HILITE1=<key,...>` (up to four keys, solid colour to attachment 0 — the block region turning a colour names
-the draw) and `DM_NVN_SKIP_FS=<key,...>` (drops those draws; the blocks vanishing names the class). Both are launch
-environment, one run per group, and each run needs a capture that shows the car at the same screen position — verify
-with a `shot` before arming a dump (Do-Not #35). The two candidates the measurement still admits are a draw that
-re-shades ground/geometry with a failed shadow term and a draw that samples a mask at a coarse level; a draw whose
-sample count is small while it covers the block region separates them, and `TOTK_ANOMALY=<dir>` + the `anomdump` input
-command gives per-draw GPU sample counts for the last frames at one request.
+S3.3g — Name the binding through which `418ba45ad47d16af` writes the zero. The draw is the single fullscreen 4-vertex
+resolve of forward pass 543889, and the blocks vanish when it is highlighted
+(`.babysteps/scratch/S3.3f/h2-03.png` against `h03.png`); its translated fragment shader
+(`NFS_build/build/shader-cache/rt-totk-native-v4-unverified/418ba45ad47d16af…-c037c52f5abc_b.metal`, lines 60–101)
+fetches depth, rebuilds a world position, and samples `fp_t_tcb_A` twice, `fp_t_tcb_10` at `level(0.0)`,
+`fp_t_tcb_C` at `float2(x,0.0)` and `fp_t_tcb_22` at `(0.5,0.5)`. `.res.json` gives the bindings (handles 14, 10, C, 22
+and the depth texture); `DM_NVN_TEXBIND=1` maps a handle to a serial in a run that reaches the race, and `DM_NVN_TEXDUMP`
+gives that serial's pixels — so the question is answered by the target that reads 0 along the car's silhouette, not by
+another key sweep. `DM_NVN_SKIP_FS=418ba45ad47d16af` removes the blocks and the world together, so it names the draw and is
+not a fix.
 
-**Closes when:** "one run with one switch removes the squares and the capture that shows it is named, or the draw is
-named and its shader shows the zero."
+**Closes when:** "one named target is shown returning 0 at the block pixels, or one run with one switch removes the
+blocks and keeps the world."
 
-**Ask the operator before starting a windowed boot.** S3.3e's third ladder was force-quit mid-run; the app takes the
-screen, and a run he did not agree to is a run he stops.
+**Ask the operator before starting a windowed boot** — the app takes the screen, and a run he did not agree to is a run
+he stops.
 
-## What S3.3e settled — do not re-derive
+## What S3.3f settled — do not re-derive
 
-- **The squares are the scene target's own zero, not a dark shading value.** In `60-race-fixed.png` 3,099 pixels are
-  exactly (0,0,0); 2,843 of them ring the car, and the majority of pixels inside each block are exactly 0 while the
-  block edges are 1–30. The same pixels read 53–78 in the lit-world target before the pass that writes the scene.
-- **The target is ser 10, the scene colour, written by pass 543889** — 330 draws, cleared to `0,0,0,1`, sampling
-  ser 44 and the shadow atlas ser 53, and also writing ser 5 (fmt 60). Measured with
-  `frame_attribution.py rank` over `.babysteps/scratch/S3.3d-constants/texdump-race6/` (frame 8637, the same frame as
-  the capture) and the records of frame 8840:
-
-  | serial | share of the block mask that is exactly zero |
-  | --- | --- |
-  | 44 lit world | **0.0 %** (clean) |
-  | **10 scene colour** | **41.2 %** (carries them) |
-  | 50 composite | 41.2 % |
-  | 76 composite | 28.3 % |
-  | 1 presented | 13.5 % |
-
-- **The post chain is excluded, not suspected.** FXAA, the tone map, bloom, the 960×540 → 480×270 → 120×67 → 30×16
-  chain and the present all sit downstream of ser 10 and inherit what it has; ser 44 is clean at those pixels.
-- **No shader in the pass discards and none writes a literal zero.** All 36 fragment keys were checked in the work
-  tree's shader cache: zero `discard_fragment`, no constant-0 colour output. The zero is therefore a **sampled value**.
-- **Not tile-shaped, not screen-grid-shaped.** 10 of 93 touched 8 px tiles are fully black and none at 16 or 32 px, so
-  it is not a DontCare/tile store. Block *sizes* cluster at ≈7.5 px and its multiples (a buffer about 256×144 over
-  1920×1080) while block *positions* sit on no grid — a projected texel grid looks like this, a screen-space mask
-  does not.
-- **The frame's pass chain**, for orientation: `543887` 502 draws → G-buffer ser 6/7/8 (the car is not in it; ser 6
-  is the road's normals) · `543888` 3 draws → ser 44 (samples the G-buffer, depth ser 9, ser 53) · `543889` → ser 10
-  · `543899`/`543900`/`543901` composites → bloom chain → `543917` final.
+- **The draw is `418ba45ad47d16af`.** One draw, `count=4`, viewport and scissor `0,0,1920,1080`, `blend_en=0`, `cull=0`,
+  `front=0(ccw=1)`, `inst=1`, `idx=none` (`boot-s33f-hilite2.log`, `HILITE draw` lines). Highlighted, it floods the
+  scene with its own colour (HILITE colour 2, yellow) and the blocks are **gone from the same crop**; the car, its soft
+  shadow and the HUD are drawn after it and survive.
+- **The four heaviest discarding decal keys do not write them.** `f65d49d4`, `2b6329f2`, `0afe74c5`, `800ee37f` (ten small
+  primitives each, blending on, pinned-LOD sample, alpha-test discard) highlighted: the blocks stay **black and
+  uncoloured** beside the car (`h03.png`, crop `blocks-h03.png`).
+- **The pass has 62 fragment keys, not 36.** A reader that takes `blend=` as decimal drops the 172 draws whose blend is
+  hex `0xff`. **17 of the 62 keys contain `discard_fragment`** (88 draws) — so a discard was never excluded, only
+  unexamined. No key writes a literal zero, so the zero is a **sampled** term (unchanged from S3.3e).
+- **The blocks are a quantised shadow-like term, not a hole.** They sit in the car's own shadow and stack along its left
+  silhouette; the shadow's soft grey parts are correct and drawn after the resolve.
+- The two probes are env-only: `TOTK_GPU_HILITE1=<≤4 keys>` + `TOTK_GPU_HILITE_NOBLEND=1` (colour to attachment 0,
+  key order green/cyan/yellow/blue), `DM_NVN_SKIP_FS=<≤16 keys>`. No rebuild to test a switch.
 
 ## Withdrawn numbers — do not re-measure or re-report as new
 
-- **"8–10 px in a 1920×1080 capture of a 1600×900 render"** is wrong about the render: the scene target ser 10 is
-  1920×1080 in the dump. Nothing renders at 1600×900 in the frames measured.
-- **"Against the sky"** was not reproduced: in the frames measured the staircase sits on road and ground beside the
-  car. Treat the sky part of the report as the operator's sighting, not as a measured fact.
-- Do-Not #14's batch — 7 stops, frames 1375–1803 by 65 s, the ~20 % frame cost — belongs to a run with the GPU
-  contended. Do not re-report it.
-- S3.3d's ser12/ser14/ser15 0 → (78.2, 90.2, 100.1) and the winding-flip result stand; do not re-measure them.
+- **"36 fragment keys"** — a parse artifact (Do-Not #36). The pass has 62, and every count derived from that list
+  (draws per key group) was computed over the opaque half only.
+- **"None of the pass's fragment keys contains `discard_fragment`"** — false as a claim about the pass; 17 of 62 do.
+- **"≈7.5 px / a 256×144 buffer"** — the size cluster stands, but no 256×144, 512×288 or 128×72 target exists in
+  `S3.3d-constants/texdump-race6/`, so the buffer identity is unconfirmed and was not claimed.
+- The rest of S3.3e's exclusions stand (post chain excluded; ser 10 carries 41.2 % of the block mask, ser 44 0.0 %).
 
 ## Code and data to touch
 
 | Work | Touch |
 | --- | --- |
+| The draw's shader | `<work>/NFS_build/build/shader-cache/rt-totk-native-v4-unverified/418ba45ad47d16af…-c037c52f5abc_b.metal` and `.res.json` |
 | Judging a run | `games/nfs/scripts/frame_attribution.py` (`chain`, `rank`) — no edit expected; it is the ruler |
-| The pass's keys and draws | `.babysteps/scratch/S3.3d-constants/boot-race6.log` (frame 8840), read with `chain` |
-| The two switches | `TOTK_GPU_HILITE1` (4 keys, colour to c0) and `DM_NVN_SKIP_FS` (16 keys) in `nvn_mtl.m` — environment only |
-| If the draw's shader holds the zero | the translated MSL in `<work>/NFS_build/build/shader-cache/rt-<chain>/<fs>.b.metal`, and `.res.json` for which handle each binding holds |
+| Grouping a pass | `.babysteps/scratch/S3.3f/group_pass.py` (draws+keys, hex-safe) and `shader_scan.py` (discard/LOD/zero) |
+| The switches | `TOTK_GPU_HILITE1`, `TOTK_GPU_HILITE_NOBLEND`, `DM_NVN_SKIP_FS` in `nvn_mtl.m` — environment only |
 | Do not | do not touch `games/totk` or `games/by3`; do not rebuild to test a switch; do not name a cause without a capture |
 
 ## Gate, and this slice's close
 
 - `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 264 tests, 1 skipped, exit 0
-  at the S3.3e close. It must pass again.
+  at the S3.3f close. It must pass again.
 - Build from the repo into the work tree (`rsync` with `build_app.py`'s excludes, then `rm -rf NFS_build/build/obj
-  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19).
-- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3f/`.
-- Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit
-  (Do-Not #11), append any new fault after #35 in `docs/donot.md`, and rewrite this seed under 120 lines. S4.2 (the
-  validation matrix) is queued behind the artefact.
+  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). S3.3f changed no source, so the
+  work tree's binary is still the repo's.
+- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3g/`.
+- Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not
+  #11), append any new fault after #36 in `docs/donot.md`, and rewrite this seed under 120 lines. S4.2 (the validation
+  matrix) stays queued behind the artefact.
 
 ## Read these first, and only these
 
-- `.operator/specs/nfs-render.md` — §What is measured · §Reading an empty target · §Ruled out by measurement, earlier ·
-  §Claim boundary
+- `.operator/specs/nfs-render.md` — §The black squares are the scene target's own zero · §Ruled out by measurement,
+  earlier · §Claim boundary
 - `.operator/guides/nfs-frame-dumps.md` — §Arming them · §The dump's records · §PNG filenames · §The translated shader
   for a key
 - `.operator/guides/running-the-nfs-boot.md` — build from the repo · the two things the work tree needs · headless vs
@@ -101,4 +86,4 @@ screen, and a run he did not agree to is a run he stops.
 
 ## Do-Not entries that apply (#, body not quoted)
 
-#14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35
+#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36
