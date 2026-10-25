@@ -28,11 +28,18 @@ outside the bundle read, set or present.
   exits 0 (14 min cold, **17 s** warm) and produces a 6.9 GB app whose seal verifies. Logs:
   `.babysteps/scratch/S4.1a/package.log`, `package-2.log`. The data bundle is stamped by the RomFS image's size/mtime/inode,
   so a rebuild reuses it.
-- **The bundle layout.** `Contents/MacOS/NFS`; `Contents/Resources/nfs/{build/nfs-native, build/shader-service/totk_xlate,
-  build/spirv-cross/spirv-cross, rewritten/nfs100/*.patched.bin, extracted/nfs100/exefs/main.npdm,
-  extracted/nfs100/romfs/runtime-index.bin, extracted/firmware/shared-fonts/}`; `Contents/Helpers/GameData-nfs100.bundle`
-  (6.9 GB) with `extracted/nfs100/romfs/romfs.bin` a relative symlink into it. **No `build/shader-libs`** — the work tree
-  had no runtime shader cache, so `make shader-libs` produced nothing and this bundle translates every shader on demand.
+- **The bundle layout.** `Contents/MacOS/NFS`; `Contents/Resources/nfs/{build/nfs-native, build/shader-libs (322
+  libraries), build/shader-service/totk_xlate, build/spirv-cross/spirv-cross, rewritten/nfs100/*.patched.bin,
+  extracted/nfs100/exefs/main.npdm, extracted/nfs100/romfs/runtime-index.bin, extracted/firmware/shared-fonts/}`;
+  `Contents/Helpers/GameData-nfs100.bundle` (6.9 GB) with `extracted/nfs100/romfs/romfs.bin` a relative symlink into it.
+  `make shader-libs` reads `<work>/nfs/build/shader-cache/rt-<chain>`, so a bundle that must not stutter is packaged after
+  that cache is seeded from a played app's `~/Library/Application Support/MacNativeGames/NFS/shader-cache/rt-<chain>`;
+  this one logs `601 loaded precompiled, 0 compiled on demand`. Variants no cache has seen still compile on demand.
+- **It is audible and clean.** The queue was on Core Audio's `AQDefaultDevice` pseudo-device (loud mix, no sound); it is
+  bound to the default output's UID now (`queue uid BuiltInSpeakerDevice`), outside `aq_lock`. The FPS/shader/load readouts
+  and the corner panel start off in the app (`TOTK_*_OVERLAY`, `NFS_HUD`; key 1 shows the panel). Game Mode is on:
+  `LSSupportsGameMode` in the Info.plist, macOS reports "Game Mode: On" in macOS full screen, and
+  `defaults write org.macnativegames.nfs NFSFullscreen -bool true` starts there.
 - **Where it writes.** Profile/save, game slot, RomFS proof and the shader cache are under
   `~/Library/Application Support/MacNativeGames/NFS/` (`TOTK_PROFILE_DIR`, `TOTK_GAME_SLOT_DIR`, `TOTK_ROMFS_PROOF_DIR`,
   `TOTK_SHADER_CACHE`, `DM_MSL_DIR`); the log is `~/Library/Logs/MacNativeGames/nfs.log` with `nfs.previous.log` kept. The
@@ -57,7 +64,7 @@ outside the bundle read, set or present.
 | --- | --- |
 | Drive the app to the menu and the race | the app's own `input.txt` channel: `~/Library/Application Support/MacNativeGames/NFS/input.txt` (`down 5` / `up 5`, `key 38 200`, `wshot <path>`, `close`) |
 | If the scroll still does not clear it | `games/nfs/app/launcher.m` (nothing should need to change: the runtime reads the file), or the ladder in `.babysteps/scratch/S3.3c-save/` as the reference cadence |
-| Optional: precompiled shaders in the bundle | `make shader-libs` needs a filled `build/shader-cache/rt-<chain>`; boot the app once, then re-seal, and the second bundle loads them (`Do-Not #24` names the lookup that consumes them) |
+| Optional: more precompiled shaders | after a play session, copy `~/Library/Application Support/MacNativeGames/NFS/shader-cache/rt-<chain>` into `<work>/nfs/build/shader-cache/` before packaging (`Do-Not #24` names the lookup that consumes the libraries) |
 | Do not | do not touch `games/totk` or `games/by3`; do not make the app depend on the work tree; do not re-slice packaging |
 
 ## Gate, and this slice's close
