@@ -1,92 +1,81 @@
 ---
-slice: S4.1b
+slice: S3.3e
 stateFile: docs/STATE.md
 donotCount: 34
-seededFrom: the S4.1a close (a self-contained 6.9 GB app launches from outside the repo and reaches the game's first-run screens; the main menu and the race in the packaged app are unobserved)
+seededFrom: the S4.1b close (the operator ran the packaged app through a full race; every packaging fix holds; one render artefact is left)
 plannedTokens: 150000
 ---
-# Next slice — S4.1b: the packaged app, driven
+# Next slice — S3.3e: the black-square artefact
 
 ## The next action
 
-S4.1b — Packaged smoke from the bundle. Launch the app S4.1a built and drive it past the first-run screens: the EA
-User Agreement scrolls with a held D-pad-down (`down 5`, ~20–30 s, `up 5`) then Ⓐ, the same trigger that writes the
-save and loads `MAIN_MENU.BNDL` in a dev-tree boot. Capture the main-menu frame, the `[nfs] fs mount save:` line and
-the `MAIN_MENU.BNDL` line, then the race the same way S3.3a did, from the app alone: no work-tree path, no env var,
-no working directory. Report what differs from the dev-tree captures (the packaged app has no `build/shader-libs`
-unless a shader cache existed when it was sealed, so the first frame translates on demand). The operator's own windowed
-run of the lit race is still open and remains the review point after this.
+S3.3e — Name the black-square artefact. In a captured race frame the car's silhouette carries small black squares
+in a staircase (about 8–10 px in a 1920×1080 capture of a 1600×900 render), along the rear, wheel arch, mirror and the
+top of the windshield frame, and — crucially — against the sky and road and in the winding-flipped frame too, so they
+are not a ground shadow and not the car's shaded colour (`.babysteps/scratch/S4.1a/zoom-left.png`, `zoom-roof.png`,
+`edge-60-race-flip.png`). They are absent from the pre-rendered title and EA screens. The next step is the measurement
+this project already has tooling for: capture one frame that shows them from the packaged app, with `DM_NVN_PASSDUMP`
+for `cull=`/`front=`/`samples=` per draw and `DM_NVN_TEXDUMP=<dir>/f-%d.png` + `DM_NVN_TEXBIND` for the targets and
+binds, then read which pass writes the squares and whether they are in a texture that is sampled (a tiled or partially
+uploaded texture) rather than in the scene target itself. Cheap switches that split the candidates without a rebuild:
+`DM_NVN_NOFXAA=1` (the FXAA full-screen draw reads the tone-mapped picture), `DM_NVN_RT_AB=0` (the runtime-extrapolation
+path, off by default), and `DM_NVN_DBG_SER=<serial>` for a target's load/store actions. Closes when a captured frame
+names the target or texture carrying the squares and one run with one switch removes them, or shows the cause is in the
+draw itself.
 
-Closes when: the packaged `Need for Speed Hot Pursuit.app` shows its main menu and a race frame, launched by
-double-click or `open`, with the save mount and the menu in `~/Library/Logs/MacNativeGames/nfs.log` — and nothing
-outside the bundle read, set or present.
+## What S4.1b settled — do not re-derive
 
-## What S4.1a settled — do not re-derive
-
-- **The build command and its result.** `python3 build_app.py target-port/need-for-speed-hot-pursuit-remastered/game.nsp
-  -k …/prod.keys --work /Volumes/X9BS/externalTmp/MacNativeGames/nfs-app -o "/Volumes/X9BS/externalTmp/MacNativeGames/apps/Need for Speed Hot Pursuit.app"`
-  exits 0 (14 min cold, **17 s** warm) and produces a 6.9 GB app whose seal verifies. Logs:
-  `.babysteps/scratch/S4.1a/package.log`, `package-2.log`. The data bundle is stamped by the RomFS image's size/mtime/inode,
-  so a rebuild reuses it.
-- **The bundle layout.** `Contents/MacOS/NFS`; `Contents/Resources/nfs/{build/nfs-native, build/shader-libs (322
-  libraries), build/shader-service/totk_xlate, build/spirv-cross/spirv-cross, rewritten/nfs100/*.patched.bin,
-  extracted/nfs100/exefs/main.npdm, extracted/nfs100/romfs/runtime-index.bin, extracted/firmware/shared-fonts/}`;
-  `Contents/Helpers/GameData-nfs100.bundle` (6.9 GB) with `extracted/nfs100/romfs/romfs.bin` a relative symlink into it.
-  `make shader-libs` reads `<work>/nfs/build/shader-cache/rt-<chain>`, so a bundle that must not stutter is packaged after
-  that cache is seeded from a played app's `~/Library/Application Support/MacNativeGames/NFS/shader-cache/rt-<chain>`;
-  this one logs `601 loaded precompiled, 0 compiled on demand`. Variants no cache has seen still compile on demand.
-- **It is audible and clean.** The queue was on Core Audio's `AQDefaultDevice` pseudo-device (loud mix, no sound); it is
-  bound to the default output's UID now (`queue uid BuiltInSpeakerDevice`), outside `aq_lock`. The FPS/shader/load readouts
-  and the corner panel start off in the app (`TOTK_*_OVERLAY`, `NFS_HUD`; key 1 shows the panel). Game Mode is on:
-  `LSSupportsGameMode` in the Info.plist, macOS reports "Game Mode: On" in macOS full screen, and
-  `defaults write org.macnativegames.nfs NFSFullscreen -bool true` starts there.
-- **Where it writes.** Profile/save, game slot, RomFS proof and the shader cache are under
-  `~/Library/Application Support/MacNativeGames/NFS/` (`TOTK_PROFILE_DIR`, `TOTK_GAME_SLOT_DIR`, `TOTK_ROMFS_PROOF_DIR`,
-  `TOTK_SHADER_CACHE`, `DM_MSL_DIR`); the log is `~/Library/Logs/MacNativeGames/nfs.log` with `nfs.previous.log` kept. The
-  bundle itself is never written.
-- **It runs from outside.** Load set mapped from the bundle, translator and `spirv-cross` started from it, `save:` mounted
-  to `…/NFS/profile/save/1d8452940529d7e44453c82f71e05f4e`, title screen / EA privacy policy / EA user agreement drawn from
-  the bundle with keys answered (`boot-1.log`, `menu-final.png`, `main-menu.png`, `menu-after-back.png`). `strings` on the
-  binary: **0** hits for the work-tree or `games/nfs` paths.
-- **Not reached:** the main menu. A 12 s held scroll did not clear the agreement; the dev-tree ladder used held D-pad
-  presses until the end of the text. That is this slice's observation, not a new fault.
-- **Gate:** 264 tests, 1 skipped, exit 0 (`.babysteps/scratch/S4.1a/gate.log`).
-
-## The operator's review point is still open
-
-- His own windowed run of the lit race, from the packaged app now — offer it at this slice's close with `runCommand`
-  replaced by `open "/Volumes/X9BS/externalTmp/MacNativeGames/apps/Need for Speed Hot Pursuit.app"`, and name the log and
-  save-file hashes.
+- **The packaged app is the thing to capture from.** The operator ran it through a full race (13,500 frames,
+  `~/Library/Logs/MacNativeGames/nfs.log` 2026-10-25 15:19, 83.7 render passes/frame); audio is audible on the bound
+  device, `601 loaded precompiled, 0 compiled on demand`, no developer HUD, Game Mode on. The app is
+  `/Volumes/X9BS/externalTmp/MacNativeGames/apps/Need for Speed Hot Pursuit.app`; rebuilds over the same work folder
+  take under a minute and keep the signed data bundle.
+- **The artefact, as measured from the existing capture.** Blocks are axis-aligned, roughly 8–10 px at 1080p, hug the
+  silhouette from outside, appear on the shadowed and lit sides, are unchanged by `TOTK_GPU_WINDING_FLIP` (so not the
+  culled-draw fault of S3.3d), and are present where the background behind them is sky or road (so not a cast shadow).
+  They do not appear in the game's pre-rendered title, EA privacy or agreement screens.
+- **What is already ruled out for the 3D path (S3.3b/S3.3d).** Format table, upload content, handle resolution,
+  sampling, the shadow atlas, layered-pass merging, constant delivery. See `.operator/specs/nfs-render.md` before
+  naming a new suspect.
+- **How the app is driven.** `~/Library/Application Support/MacNativeGames/NFS/input.txt` (the launcher sets
+  `TOTK_INPUT_FILE`): `key <code> <ms>` (A=38, Y=32, D-pad down=5, B=40), `down/up <code>`, `shot`/`wshot <path>`,
+  `shotn <n> <path with %d>`, `close`. The race start needs the S3.3a cadence, not per-screen sleeps; SELECT COLOR
+  answers Ⓨ.
+- **Diagnostics that exist.** `DM_NVN_PASSDUMP` (`P`/`d`/`B` records, `samples=` in the `P` record),
+  `DM_NVN_TEXDUMP=<dir>/f-%d.png`, `DM_NVN_TEXBIND`, `DM_NVN_DBG_SER=<serial>`, `DM_NVN_NOFXAA=1`, `DM_NVN_RT_AB=0`,
+  `DM_NVN_SHMAP`, `DM_NVN_DIRTYCHECK`/`DM_NVN_DIRTYFIX` (dirty-page tracking of packaged textures). Read
+  `.operator/guides/nfs-frame-dumps.md` first — it names each record and where the translated Metal for a shader key
+  lives.
+- **Packaging now also carries the app icon** (`games/nfs/scripts/extract_app_icon.py` → `build/AppIcon.icns`), so a
+  rebuild does not lose it.
+- **Gate:** 264 tests, 1 skipped, exit 0.
 
 ## Code and data to touch
 
 | Work | Touch |
 | --- | --- |
-| Drive the app to the menu and the race | the app's own `input.txt` channel: `~/Library/Application Support/MacNativeGames/NFS/input.txt` (`down 5` / `up 5`, `key 38 200`, `wshot <path>`, `close`) |
-| If the scroll still does not clear it | `games/nfs/app/launcher.m` (nothing should need to change: the runtime reads the file), or the ladder in `.babysteps/scratch/S3.3c-save/` as the reference cadence |
-| Optional: more precompiled shaders | after a play session, copy `~/Library/Application Support/MacNativeGames/NFS/shader-cache/rt-<chain>` into `<work>/nfs/build/shader-cache/` before packaging (`Do-Not #24` names the lookup that consumes the libraries) |
-| Do not | do not touch `games/totk` or `games/by3`; do not make the app depend on the work tree; do not re-slice packaging |
+| The frame capture | `wshot`/`shotn` from the app's `input.txt`, with the dump env vars passed through `open --env` |
+| Where the squares are written | `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m` (pass records, FXAA at ~:9826, the runtime-extrapolation region path at ~:10719) |
+| If they are in a texture | `nvn_tex.c` (block-linear layout/upload), `nvn_dirty.c` (page-level re-upload of packaged textures) |
+| Do not | do not touch `games/totk` or `games/by3`; do not rebuild the app to test a switch (they are all environment); do not name a cause without the captured frame |
 
 ## Gate, and this slice's close
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (264 tests, 1 skipped at
-  the S4.1a close).
-- Evidence is the packaged run's own log and frames, in `.babysteps/scratch/S4.1b/`. A frame is a claim only with its
-  capture named; a boot's stop rate is reportable only with the GPU otherwise free (`Do-Not #14`).
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (264 tests, 1 skipped).
+- A frame is a claim only with its capture named; a boot's stop rate is reportable only with the GPU otherwise free
+  (`Do-Not #14`). Evidence goes in `.babysteps/scratch/S3.3e/`.
 - Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit
-  (`Do-Not #11`); append any new fault after #34 in `docs/donot.md`; rewrite this seed from what S4.1b leaves behind,
-  under 120 lines (S4.2 — the validation matrix — is queued).
+  (`Do-Not #11`); append any new fault after #34 in `docs/donot.md`; rewrite this seed from what S3.3e leaves behind,
+  under 120 lines (S4.2, the validation matrix, is queued).
 
 ## Read these first, and only these
 
-- `.operator/specs/nfs-port.md` § Manifest authority · § Runtime load set — the six-file load set the bundle carries, and
-  the manifest that authorises every byte in it.
-- `.operator/guides/running-the-nfs-boot.md` — the input commands, the cadence rule, the ~1 min game-slot wait, the ~0.1 s
-  guest-reservation retry, and the packaged app's own data folder.
-- `.operator/product/launch-path.md` § The launch path, in order (1–4 done after this slice; 5 = S4.2) · § Release-claim
-  boundary.
-- `games/nfs/README.md` — what the work tree and the app each carry.
+- `.operator/specs/nfs-render.md` — what the 3D path is measured to do, the winding inversion, how to read an empty
+  target, and what earlier slices ruled out.
+- `.operator/guides/nfs-frame-dumps.md` — `P`/`d`/`B` records, `f-<n>.png` names, and finding a shader key's Metal.
+- `.operator/guides/running-the-nfs-boot.md` — the input commands, the cadence rule, the game-slot wait and the
+  ~0.1 s guest-reservation retry.
 
 ## Do-Not entries that apply (#, body not quoted)
 
-#6 · #11 · #14 · #19 · #22 · #27 · #31 · #32 · #33 · #34
+#6 · #14 · #16 · #19 · #22 · #24 · #27 · #30 · #31 · #32 · #33 · #34

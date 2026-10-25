@@ -1651,7 +1651,7 @@ def nfs_app_files(version='nfs100'):
             [f'extracted/{version}/exefs/main.npdm', f'extracted/{version}/romfs/runtime-index.bin'])
 
 
-def step_app_nfs(nfs, out, logs, *, env):
+def step_app_nfs(nfs, out, logs, *, env, game, keys):
     """Assemble the Mac app for Need for Speed: build the runtime and the launcher in the work tree, copy the load set,
     the shared fonts, the shader translator and the shader libraries into Contents/Resources/nfs, sign the RomFS image
     as a data bundle of its own, and seal the app. The launcher chdirs there, so no path inside the app names the work
@@ -1662,6 +1662,13 @@ def step_app_nfs(nfs, out, logs, *, env):
     # WORK=. : the work tree is this folder (extracted/ and rewritten/ beside it), so build/ is what the app carries.
     run(['make', 'WORK=.', 'prepare', 'runtime', 'shader-tools', 'shader-libs'], logs / 'make-nfs.log', cwd=nfs, env=env)
     run(['make', 'WORK=.', 'launcher'], logs / 'launcher-nfs.log', cwd=nfs, env=env)
+    icon = nfs / 'build/AppIcon.icns'
+    if not icon.exists():   # the game's own 256x256 icon from its control NCA; the app still builds without it
+        try:
+            run([nfs.parent / 'venv/bin/python', 'scripts/extract_app_icon.py', game, '--keys', keys,
+                 '--title', expected['title_id'], '--output', 'build/AppIcon.icns'], logs / 'app-icon.log', cwd=nfs)
+        except BuildError as e:
+            say(f'4/4 app: no app icon, the app gets the default one ({str(e).splitlines()[0]})')
     tmp = out.with_name(out.name + '.partial')
     if tmp.exists():
         remove_tree(tmp)
@@ -1682,6 +1689,9 @@ def step_app_nfs(nfs, out, logs, *, env):
                 LSApplicationCategoryType='public.app-category.racing-games', LSSupportsGameMode=True,
                 GCSupportsControllerUserInteraction=True)
     import plistlib
+    if icon.exists():
+        clone(icon, tmp / 'Contents/Resources/AppIcon.icns')
+        info['CFBundleIconFile'] = 'AppIcon'
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
     sign_app(tmp, logs)   # A failed seal must not remove the previous working app.
@@ -1797,7 +1807,7 @@ def main(argv):
         step_code_nfs(tree, nfs, game, keys, env, logs)
         step_data_nfs(tree, nfs, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts)
         say(f'4/4 app: assembling {out}')
-        step_app_nfs(nfs, out, logs, env=env)
+        step_app_nfs(nfs, out, logs, env=env, game=game, keys=keys)
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
         t1 = time.time()
