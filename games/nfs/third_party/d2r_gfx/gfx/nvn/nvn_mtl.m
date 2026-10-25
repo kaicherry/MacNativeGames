@@ -4522,6 +4522,20 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         else if (stt) PD("P %llu s ser=%llu fmt=%lu %lux%lu %s (stencil only)", g_stat_pass + 1, R.rt.depth->serial, (unsigned long)stt.pixelFormat,
                    (unsigned long)stt.width, (unsigned long)stt.height, pd.stencilAttachment.loadAction == MTLLoadActionClear ? "clear" : "load");
     }
+    {   /* DM_NVN_DBG_SER=<serial>: a target holding its clear value needs what the once-per-pass D record cannot carry —
+           whether the stencil plane is attached at all, and the value it was cleared to. */
+        static long ds = -2; if (ds == -2) { const char *e = getenv("DM_NVN_DBG_SER"); ds = e ? strtol(e, NULL, 0) : -1; }
+        int ci = -1;
+        if (ds >= 0 && passdump()) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (long long)R.rt.color[i]->serial == ds) { ci = i; break; }
+        if (ci >= 0) { id<MTLTexture> dt = pd.depthAttachment.texture, stt = pd.stencilAttachment.texture;
+            MLOG("[dbgser] pass %llu c%d ser=%ld lv=%lu sl=%lu load=%d store=%d rtarray=%lu %lux%lu; depth=%d fmt=%lu load=%d cd=%g; stencil=%d fmt=%lu load=%d cs=%u store=%d",
+                 (unsigned long long)(g_stat_pass + 1), ci, ds, (unsigned long)pd.colorAttachments[ci].level, (unsigned long)pd.colorAttachments[ci].slice,
+                 (int)pd.colorAttachments[ci].loadAction, (int)pd.colorAttachments[ci].storeAction, (unsigned long)pd.renderTargetArrayLength,
+                 (unsigned long)pd.renderTargetWidth, (unsigned long)pd.renderTargetHeight,
+                 dt ? 1 : 0, (unsigned long)(dt ? dt.pixelFormat : 0), (int)pd.depthAttachment.loadAction, pd.depthAttachment.clearDepth,
+                 stt ? 1 : 0, (unsigned long)(stt ? stt.pixelFormat : 0), (int)pd.stencilAttachment.loadAction, (unsigned)pd.stencilAttachment.clearStencil,
+                 (int)pd.stencilAttachment.storeAction); }
+    }
     if (natt && nload == natt) g_pass_full_rw++;
     g_nsd = 0;
     {
@@ -10026,9 +10040,10 @@ frz_plain:;
     { static long nocull_from = -2; if (nocull_from == -2) { const char *e = getenv("TOTK_GPU_NOCULL_FROM"); nocull_from = e ? atol(e) : -1; }
       if (nocull_from >= 0 && (long)atomic_load(&g_cur_frame) >= nocull_from) enc_r_cull(en, MTLCullModeNone);
       else enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone); }
-    /* TOTK diagnostic TOTK_GPU_WINDING_FLIP=1: invert the NVN -> Metal front-face mapping for every draw. */
+    /* NVN names the front face with y up and Metal evaluates winding with y down, so one maps to the other's opposite.
+       TOTK_GPU_WINDING_FLIP=1 restores the literal mapping, which every back-face-culled draw in the race then loses. */
     { static int flip = -1; if (flip < 0) { const char *e = getenv("TOTK_GPU_WINDING_FLIP"); flip = e && atoi(e); }
-      int ccw = (S.poly.front == NVN_FRONT_FACE_CCW) != (flip != 0);
+      int ccw = (S.poly.front == NVN_FRONT_FACE_CW) != (flip != 0);
       /* TOTK diagnostic: TOTK_GPU_HILITE_CULL=0/1/2 (none/front/back) and TOTK_GPU_HILITE_WIND=0/1 (cw/ccw) override the state of the highlighted draws only */
       { static int hc = -2, hw = -2; if (hc == -2) { const char *a = getenv("TOTK_GPU_HILITE_CULL"), *b = getenv("TOTK_GPU_HILITE_WIND"); hc = a ? atoi(a) : -1; hw = b ? atoi(b) : -1; }
         const char *hl = hilite1_env();

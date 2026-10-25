@@ -1,71 +1,100 @@
 ---
-slice: S3.3d
+slice: S3.3c
 stateFile: docs/STATE.md
-donotCount: 29
-seededFrom: the S3.3b close (the textures arrive; the shading that turns them into colour returns zero)
-plannedTokens: 160000
+donotCount: 30
+seededFrom: the S3.3d close (the race is lit; no run since S3.1d has exercised a save write)
+plannedTokens: 150000
 ---
-# Next slice — S3.3d: restore surface radiance
+# Next slice — S3.3c: save/load across a race
 
-## The next action — verbatim
+## The next action
 
-S3.3d — Make the race's 3D surfaces lit: the G-buffer proves the textures reach the shader, so the fault is in the shading that turns them into colour. In one race frame three shaded targets are black while the G-buffer beside them is correct. Read the shading math and its constants for one lit draw, name the term that is zero, and fix it. Do not touch `games/totk` or `games/by3`; do not "fix" it by forcing a default texture or a constant light.
+S3.3c — Save/load across a race, and verify the persisted state survives a restart. S3.1d established only the
+**read** path: a repo-built boot reads `save:/MUD64.8`, the notice is passed, and the main menu is reached. Nothing
+yet shows the game **writing** the save directory, nothing shows those bytes being committed, and nothing shows
+the same bytes coming back into a second boot.
 
-S3.3d closes when a repo-built windowed run draws one lit, textured surface in the race — a capture and its log named — or the zero term is named with the shader, the constant and the value that places it there.
+S3.3c closes when a run writes a save from inside the game — a race that ends, an event that completes, or a
+setting changed — and the file under the host save directory is shown to change, to be readable by a second
+repo-built boot, and to be unchanged by a third boot that only reads it. Name the file, its size and its hash at
+each step. Or: name, with the fs call and the branch that drops it, the write the game issues and does not get.
 
-## What S3.3b settled — do not re-derive
+## What S3.3d settled — do not re-derive
 
-- **Textures reach the shader.** In passdump frame 8916 (`.babysteps/scratch/S3.3b-texbind/boot-race4.log`) the G-buffer pass **549787** (520 draws, 2,740 sampled-texture binds) writes ser6/ser7/ser8 at 1920×1080 plus depth ser9. A texdump of the adjacent frame 8915 shows **ser7 = the road, cliff, grass and trees fully textured** (`texdump/f-700.png`) and **ser6 = correct normals** (`f-600.png`). Upload, handle resolution and sampling are therefore all working on the same surfaces, in the same frame, with the same textures.
-- **Handle resolution is excluded by measurement.** `DM_NVN_TEXBIND` (`nvn_mtl.m`, `texbind_note`/`texbind_roll`) counts sampled-texture binds that resolve to the all-zero dummy: **0 dummy** in every sampled frame of the race, against 2,330–3,426 real binds per frame (`boot-race2.log`, `boot-race4.log`). A shader reading a zero albedo would have shown here and did not.
-- **The shadow atlas is not missing.** ser53 (1024×3072 depth) is rendered by pass **549771** in the same frame and is sampled through a real comparison sampler (`B … samp reg15 sid=266 cmp=1/2`). An absent shadow map is excluded.
-- **Every shaded output is black.** ser44 (pass **549788**, 3 draws — sky/atmosphere, `f-4400.png`), ser10 (pass **549789**, 330 draws, 2,032 binds — the shaded scene, `f-1000.png`), the final ser76 (`f-7600.png`) and the captured race (`50-race-a.png`) all show correct sky, fog, HUD and pre-rendered backdrops with **zero surface radiance**. The loss is not one target.
-- **The ambient chain is black at its root.** The environment cube ser12 (256×256, six faces, RG11B10Float) is entirely black (`f-1200.png`), and the 32×32 pair ser14/ser15 derived from it are black (`f-1400.png`, `f-1500.png`). ser14/ser15 are read 82 times by 549789, so the main pass's ambient input is zero by construction.
-- **The pass dump's draw line is lowercase `d`.** One `d` line per draw (with `vs=`/`fs=`); uppercase `D` is a different record (`prim=`, or a bloom note). Counting `D` makes a 330-draw pass look like one fullscreen draw. Do-Not #29.
-- **`screenshot` does not create its directory.** `texdump <path>/f-%d.png` with the directory absent arms, finds 46 colour targets, and fails every write after the frame is already dumped. `mkdir -p` in the runner first. Do-Not #28.
+- **The race's real-time 3D is lit and textured.** `.babysteps/scratch/S3.3d-constants/60-race-fixed.png` from
+  `boot-race6.log`, drawn by a repo-built binary with no diagnostic environment: textured asphalt and markings,
+  rock, shrubs, sky, the car's decals and its `ND4SPD` plate, and the shadow under the car.
+- **The zero term was the NVN→Metal front-face mapping, not the shading.** NVN names the front face with y up and
+  Metal evaluates winding with y down, so the literal mapping put the visible surface on the back for every
+  back-face-culled draw. `TOTK_GPU_WINDING_FLIP=1` now restores the old (wrong) mapping as a one-run diagnostic.
+  Do-Not #30.
+- **An empty shaded target is not a zero until its draws are shown to rasterize.** Read `cull=` on the draw and
+  `front=` on the frame before reading the shader.
+- **The probe chain is alive.** ser12 (256×256×6, all mips), ser14 and ser15 went from exactly 0 to
+  (78.2, 90.2, 100.1), (78.9, 91.2, 100.8) and (77.9, 90.0, 99.6) with the fix; ser10 (112.4, 111.5, 99.5) and
+  ser44 (65.0, 69.2, 69.5) moved with them.
+- **The probe's stencil gate is real state and not a fault.** Its pass attaches a `Depth32Float_Stencil8` plane,
+  clears it to 0 and its deferred shade tests `LESS` against reference `0x80`; with the winding fixed that same
+  gated quad draws. `DM_NVN_DBG_SER=<serial>` prints a colour target's load/store actions and its depth and
+  stencil planes once per pass — the P record carries none of that.
 
-## What the evidence leaves
+## What the save path looks like today
 
-Two independent shaded paths are black in the same frame and they share their lighting inputs, not their geometry:
+- The fs host mounts the save directory at boot and logs the host path: `host save storage:
+  user-data/save/db047cf775247afa9b3bd6d11bcf9740`, then `fs mount save: -> …`. The mount is the `nn::fs`
+  `save:` family; the `savedata` / `ns:save_data` IPC services exist (`S3.1c`) but `main` imports no `nn::ns`,
+  so they are not the path this game saves through (S3.1d).
+- `runtime_fs_save_busy()` already reports "a save file is open for writing" and the fs host has unit checks for
+  create/open/read around it (`games/nfs/runtime/fs_host.c:353-363`), so the bookkeeping exists; what is unproven
+  is that the game's own writes reach disk and commit.
+- `autoload.c` parses `save:/slot_NN/<name>`, so more than one file name is expected in that directory.
 
-1. **The forward scene pass 549789** reads depth ser9, the sky/fog buffer ser44, the shadow atlas ser53, the environment cube ser12, the ambient pair ser14/ser15, and the material textures — and writes ser10 black. Its *own* second attachment (ser5, RG16Unorm, `f-500.png`) carries the car's geometry correctly, so the raster and the shader ran.
-2. **The environment-cube path** (549712 → ser12) is black too, and its inputs are the cube G-buffer ser16/ser17/ser18 (normals, albedo, material) — ser16/ser17 are correct (`f-1600.png`, `f-1700.png`) and ser18 is black like ser8.
+## Questions this slice answers, in order
 
-The cheapest read is the shading math itself: the translated Metal for every shader key is on disk at
-`NFS_build/build/shader-cache/rt-<chain>/<key>_b.metal`, and the pass dump prints each draw's key (`fs=`) and its fragment constants (`B … cb reg0 … f=a,b,c,d`). Read the fragment shader of one lit draw in 549789 and the constants it consumes, and find which term is zero: the sun term (direction/colour in a constant buffer), the shadow factor (PCF over ser53), the ambient factor (ser14/ser15, already known black), or the material/AO channel (ser8/ser18, also black).
+1. Does any run of the game **open a file under `save:` for writing**? `[totk-fs]` lines plus the file's mtime
+   answer this without a new instrument; a run that ends a race should produce it.
+2. If a write happens, does the file change on the host, and does a second boot read the changed bytes rather
+   than the packaged image? Hash the file before, after and after the second boot.
+3. If no write happens, which fs call does the game issue last before it would have written, and what does the
+   host return for it? `TOTK_CMD_LOG` already logs the fs command path.
+4. Does a read-only third boot leave the file byte-identical? A save path that rewrites on load is a defect even
+   when the bytes are right.
 
-The two black channels — ser8 (material) and ser18 (material) — are the same attachment index in the G-buffer and in the cube G-buffer, and they are the only pair that is black in a buffer that is otherwise correct. Read the shading math for which of them multiplies the result before spending a boot on it.
-
-## Code to touch
+## Code and data to touch
 
 | Work | Touch |
 | --- | --- |
-| Shading math (read first) | `NFS_build/build/shader-cache/rt-<chain>/<key>_b.metal` for the `fs=` of a lit draw in 549789; `.res.json` beside it names each binding's handle. |
-| The draw and its constants | `nvn_mtl.m` `encode_args` (constants at `PD("B %llu st%d cb reg%d …")`, line ~7190). |
-| G-buffer material attachment | `nvn_mtl.m` — how the MRT write mask and the fragment outputs of the scene pass reach c2; ser8 is black for every surface. |
-| Instrumentation already there | `DM_NVN_PASSDUMP` (per-draw keys, targets, samplers), `DM_NVN_TEXDUMP` (colour targets as PNG), `DM_NVN_TEXBIND` (dummy binds), `DM_NVN_REGLUM`, `DM_NVN_UB`/`TOTK_UBO_CAPTURE` (constant buffers). |
-| Do not | Do not touch `games/totk` or `games/by3`; do not force a default texture, a constant light or a fixed albedo. |
+| The save mount and its commit semantics | `games/nfs/runtime/fs_host.c` (`save:` mount, `runtime_fs_save_busy`, create/open/commit) |
+| Slot naming | `games/nfs/runtime/autoload.c` (`save:/slot_NN/<name>`) |
+| The bytes on disk | the work tree's `user-data/save/<hash>/` — hash and size are the evidence; do not hand-edit it between runs |
+| The run itself | `.babysteps/scratch/S3.3d-constants/run-fixed.sh` (the ladder that reaches the race; `<screenshot>` and `texdump <path>/f-%d.png` are input commands, not env vars) |
+| Do not | Do not fabricate a save file, do not mark the round-trip passed from a log line alone, and do not touch `games/totk` or `games/by3`. |
 
 ## Read these first, and only these
 
-- `.babysteps/scratch/S3.3b-texbind/` — `boot-race4.log` (frame 8916 passes), `texdump/` (the frame's targets), `run-race4.sh` (the ladder that reaches the race), `passes.py`/`chain.py`/`trace.py` (the readers written for them).
-- `.operator/guides/running-the-nfs-boot.md` — repo build, work-tree symlinks, the cadence rule, the key table.
-- `.operator/specs/nfs-port.md` — Claim boundaries.
-- `docs/donot.md` #14, #19, #22, #27, #28, #29.
+- `.operator/guides/running-the-nfs-boot.md` — repo build, the work tree, the input cadence, the key table.
+- `docs/STATE.md` § Completed, S3.1d and S3.3d paragraphs — the read path and the render fix as measured.
+- `.operator/specs/nfs-port.md` — the `nn::fs` save path and its claim boundaries.
+- `docs/donot.md` #11, #14, #19, #22, #27, #30.
 
-## Do-Not entries that apply here (6 of 29)
+## Do-Not entries that apply here (6 of 30)
 
+- #11 — advance all five `docs/STATE.md` sections in the closing commit.
 - #14 — discard a rate/frame batch taken under GPU contention.
-- #19 — build from the repo; re-sync and force the rebuild.
+- #19 — build from the repo; re-sync the work tree and force the rebuild.
 - #22 — a headless boot reaches states a windowed one does not; change one variable at a time.
 - #27 — pass a Mac keycode below 128 to `key`, not a pad bit.
-- #28 — create a diagnostic's output directory before the run, not after it fails.
-- #29 — the per-draw line is lowercase `d`.
+- #30 — an empty target is not a zero until its draws are shown to rasterize.
 
 ## The gate
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (261 tests, 1 skipped at the S3.3b close).
-- **Offer the operator a run** after the change, built from the repo (Do-Not #19), with the log captured. This slice's subject is what he can see, so his run is the evidence, and he reaches the race faster than a scripted ladder.
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` must pass (261 tests,
+  1 skipped at the S3.3d close).
+- **Offer the operator a run** after any change he can see (the lit race is already offered and open), built from
+  the repo (Do-Not #19), with the log and the save-file hashes named.
 
 ## When this slice closes
 
-Advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not #11); append any new fault after the last existing entry; rewrite this seed from what S3.3d leaves behind.
+Advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit (Do-Not
+#11); append any new fault after the last entry in `docs/donot.md`; rewrite this seed from what S3.3c leaves
+behind, under 120 lines.
