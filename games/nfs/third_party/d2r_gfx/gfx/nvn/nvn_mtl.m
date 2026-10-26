@@ -2604,6 +2604,13 @@ static int tex_swizzle_sel(const tex_t *t, const uint8_t *view_sel, int format, 
 }
 static int tex_swizzle(const tex_t *t, int format, MTLTextureSwizzleChannels *out) { return tex_swizzle_sel(t, NULL, format, out); }
 static int swizzle_eq(MTLTextureSwizzleChannels a, MTLTextureSwizzleChannels b) { return a.red == b.red && a.green == b.green && a.blue == b.blue && a.alpha == b.alpha; }
+// DM_NVN_FLOAT_TARGET=<serial> stores that serial's NVN 0x3D as RGBA16Float, so a draw's own output keeps its sign and a NaN.
+// A view of the swapped target must take the base format: RGB10A2 over RGBA16Float is not a Metal format view.
+static uint64_t float_target_ser;
+static int float_target_on(const tex_t *t, int format) {
+    static int read; if (!read) { read = 1; const char *e = getenv("DM_NVN_FLOAT_TARGET"); float_target_ser = e ? strtoull(e, NULL, 10) : 0; }
+    return float_target_ser && format == 0x3D && t->serial == float_target_ser;
+}
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     static int ul = -1; if (ul < 0) { const char *e = getenv("DM_NVN_UPLOG"); ul = e != NULL; }
@@ -2612,6 +2619,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         MLOG("[tex_desc] ser=%llu format %#x kind=%d %ux%u lv%u tgt=%d%s", (unsigned long long)t->serial, t->d.format, kind, t->d.width, t->d.height, t->d.levels, t->d.target, kind == 0 ? " NO METAL EQUIV" : "");
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "texture format %#x has no Metal equivalent (first case)", t->d.format); return nil; }
     int unp = 0; { uint32_t upf; int ubpp; if (tex_astc(t)) pf = (uint32_t)bc1_astc_pf(t->d.format); else if (tex_tc(t)) pf = (uint32_t)tc_pf(t->d.format); else if (bc_unpack(t->d.format, &upf, &ubpp)) { pf = upf; unp = 1; } }
+    if (float_target_on(t, t->d.format)) { pf = (uint32_t)MTLPixelFormatRGBA16Float; static int said; if (!said++) MLOG("[float-target] ser=%llu %ux%u lv%u format %#x (RGB10A2Unorm) stored as RGBA16Float", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.levels, t->d.format); }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.pixelFormat = (MTLPixelFormat)pf;
     d.width = t->d.width ? t->d.width : 1; d.height = t->d.height ? t->d.height : 1; d.depth = 1; d.arrayLength = 1;
@@ -4260,6 +4268,7 @@ void pg_commit_ext(id<MTLCommandBuffer> cb) { pg_commit(cb); }
    PixelFormatView usage requirement for linear/sRGB pairs does not mean their formats are interchangeable. */
 static MTLPixelFormat attachment_format(const tex_t *t, const view_t *v, int has_v, MTLPixelFormat base) {
     if (!has_v || !v->set_format || fmt_compressed(t->d.format)) return base; /* block targets use blk_aux */
+    if (float_target_on(t, v->format)) return base;
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(v->format, &pf, swz) || !pf) MDIE("attachment view format %#x unsupported", v->format);
     return (MTLPixelFormat)pf;
@@ -5477,6 +5486,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
         { uint32_t upf; int ubpp; if (r.v.set_format && bc1_fmt(r.v.format) && pf_astc4(base.pixelFormat)) pf = (uint32_t)bc1_astc_pf(r.v.format);   // TOTK: BC1 view of a transcoded (ASTC) texture
           else if (r.v.set_format && tc_pf(r.v.format) != MTLPixelFormatInvalid && tc_pf(r.t.d.format) == base.pixelFormat) pf = (uint32_t)tc_pf(r.v.format);   // TOTK: view of a BC2/3/4/5/7 texture stored transcoded (tex_tc)
           else if (r.v.set_format && bc_unpack(r.v.format, &upf, &ubpp)) pf = upf; }   // 无 BC：BC 视图跟底图一样换成解压后的格式 | No BC: a BC view is switched to the decompressed format just like the base texture
+        if (float_target_on(&r.t, r.v.set_format ? r.v.format : r.t.d.format)) pf = (uint32_t)base.pixelFormat;
         if (r.v.set_format && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
             base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf);
             if (g_tex_prepare_split) return nil;
@@ -10651,6 +10661,7 @@ static void clear_tex(const p_clear_tex *c) {
     if (c->has_view && c->view.set_format) {   // 视图换格式：清除值按视图格式解释（游戏 5 次全是 ui 版配整数视图），在同格式视图上清 | View with changed format: the clear value is interpreted in the view format (all 5 of the game's calls are the ui version with an integer view), and the clear is done on a view of the same format
         uint32_t vpf = 0; uint8_t swz[4];
         if (!nvn_fmt_to_mtl(c->view.format, &vpf, swz) || !vpf) { RED_ONCE(42, "clear texture view format %#x has no mapping", c->view.format); return; }
+        if (float_target_on(c->tex, c->view.format)) vpf = (uint32_t)t.pixelFormat;
         if (tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf) && !(t.usage & MTLTextureUsagePixelFormatView)) t = tex_upgrade_pfv(c->tex, t, (MTLPixelFormat)vpf);
         if (t.pixelFormat != (MTLPixelFormat)vpf) {
             id<MTLTexture> v = [t newTextureViewWithPixelFormat:(MTLPixelFormat)vpf];
