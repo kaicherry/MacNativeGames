@@ -18,9 +18,11 @@ from extract_exefs import decrypt, common_tickets, container_entries
 from extract_update_romfs import hactool_prod_keys, merge
 import build_app
 
+BOTW_TITLE = 0x01007EF00011E000
 
-def update_nca(managed=True):
-    data = nca(managed)
+
+def update_nca(managed=True, title=TITLE):
+    data = nca(managed, title=title)
     header = bytearray(b''.join(decrypt(HEADER, modes.XTS(i.to_bytes(16, 'big')),
                                      data[i*512:(i+1)*512]) for i in range(6)))
     header[0x604] = 4  # BKTR marker in section 1; these tests extract only ExeFS.
@@ -30,12 +32,30 @@ def update_nca(managed=True):
                     for i in range(6)) + data[0xc00:]
 
 
+def fake_venv(tree):
+    """A `.venv` whose python is this interpreter: build_app runs `<tree>/.venv/bin/python` for its scripts. Homebrew's
+    sys.prefix has no bin/python, so linking the prefix (as the tests did) only works on python.org installs. A script that
+    execs this interpreter by its own path, not a symlink: a venv's python finds its pyvenv.cfg (and so its packages,
+    cryptography among them) from the path it is started by."""
+    (tree/'.venv'/'bin').mkdir(parents=True, exist_ok=True)
+    (tree/'.venv'/'bin'/'python').write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    (tree/'.venv'/'bin'/'python').chmod(0o755)
+    (tree/'.venv'/'bin'/'nsz').write_text('#!/bin/sh\nexit 0\n')   # build_app.py runs .venv/bin/nsz for NSZ sources
+    (tree/'.venv'/'bin'/'nsz').chmod(0o755)
+
+
 def fake_data_bundle(tree, version, _logs, **_names):
     """build_app.data_bundle without the 16 GB image or codesign: an empty bundle folder."""
     bundle = tree / f'build/data-bundles/GameData-{version}.bundle'
     (bundle / 'Contents/Resources').mkdir(parents=True, exist_ok=True)
     (bundle / 'Contents/Resources/romfs.bin').write_bytes(b'image')
     return bundle
+
+
+def game_data(tree, version):
+    """The game data folder step_app copies into the app (build_app.place_game_data)."""
+    for name in build_app.game_data_files(version):
+        p=tree/f'build/game-data/{version}'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
 
 
 class Updates(unittest.TestCase):
@@ -82,6 +102,27 @@ class Updates(unittest.TestCase):
         tree = self.fixture_tree()
         with patch.dict(build_app.UPDATED, {'exefs_sha256': {'main': build_app.UPDATED['exefs_sha256']['main']}}), self.assertRaisesRegex(build_app.BuildError, 'ExeFS main'):
             build_app.step_code(tree, self.update, self.keys, os.environ, self.root/'logs', version='v112')
+        self.assertFalse((tree/'rewritten').exists())
+
+    def test_botw190_update_is_extracted_by_the_botw_script_and_checked_against_its_pins(self):
+        tree = self.root/'tree'; tree.mkdir()
+        (tree/'scripts').symlink_to(SCRIPTS, target_is_directory=True)
+        (self.root/'botw').mkdir(); (self.root/'botw/scripts').symlink_to(SCRIPTS.parents[1]/'botw/scripts', target_is_directory=True)
+        fake_venv(tree)
+        botw = self.root/'botw-update.nsp'
+        botw.write_bytes(partition([('program.nca', update_nca(title=BOTW_TITLE)), ('common.tik', ticket())]))
+        pins = {'exefs_sha256': {'main': build_app.BOTW190['exefs_sha256']['main']}, 'display_version': '1.9.0',
+                'title_id': build_app.BOTW190['title_id']}
+        with patch.dict(build_app.VERSIONS, {'botw190': pins}):
+            # the synthetic ExeFS is extracted by games/botw/scripts/extract_exefs.py (#117) and then fails its pin
+            with self.assertRaisesRegex(build_app.BuildError, 'ExeFS main'):
+                build_app.step_code_botw(tree, self.root/'botw', botw, self.keys, os.environ, self.root/'logs', version='botw190')
+            self.assertEqual((tree/'extracted/botw190/exefs/main').read_bytes(), b'synthetic main')
+            # a Tears of the Kingdom update is another game for it
+            shutil.rmtree(tree/'extracted')
+            with self.assertRaisesRegex(build_app.BuildError, 'extract_exefs.py failed'):
+                build_app.step_code_botw(tree, self.root/'botw', self.update, self.keys, os.environ, self.root/'logs', version='botw190')
+        self.assertIn('Expected one update Program NCA of 01007EF00011E000', (self.root/'logs/extract_exefs-botw190.log').read_text())
         self.assertFalse((tree/'rewritten').exists())
 
     def test_nsz_conversion_is_cached_by_source_identity(self):
@@ -233,17 +274,20 @@ class Updates(unittest.TestCase):
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
                        f'build/shader-seed/{version}/pso_manifest.tsv']+[f'rewritten/{version}/{n}.patched.bin' for n in ('main','sdk','subsdk0')]
+                files+=[f'build/game-data/{version}/{n}' for n in build_app.GAME_DATA]
                 for rel in files:
                     p=tree/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
                 import hashlib
                 (tree/f'build/shader-seed/{version}/seed-manifest.json').write_text(json.dumps(dict(
-                    version=version, chain='totk-native-v6-unverified', shaders=8000,
+                    version=version, chain='totk-native-v8-unverified', shaders=8000,
                     files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
                 with patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing:
                     build_app.step_app(tree,out,self.root/'logs',version=version)
                 signing.assert_called_once_with(out.with_name(out.name+'.partial'),self.root/'logs')
                 info=plistlib.loads((out/'Contents/Info.plist').read_bytes())
                 self.assertEqual(info['CFBundleShortVersionString'],display)
+                self.assertIn('zh-Hans',info['CFBundleLocalizations']);self.assertIn('zh-Hant',info['CFBundleLocalizations'])
+                self.assertEqual('pt-BR' in info['CFBundleLocalizations'],version=='v143')
                 res=out/'Contents/Resources/totk'
                 self.assertFalse((res/'build'/f'totk-native-{version}').exists())
                 self.assertTrue((res/'build/totk-native').exists())
@@ -251,15 +295,19 @@ class Updates(unittest.TestCase):
                 self.assertTrue((res/'build/shader-seed/seed-manifest.json').exists())
                 self.assertTrue((res/'build/pso_title.tsv').exists())   # the list the first frame waits for
                 self.assertEqual([p.name for p in (res/'rewritten').iterdir()], [version])
+                self.assertEqual(sorted(p.name for p in (res/'build/game-data').iterdir()), [version])   # runtime/game_data.h
+                for name in build_app.GAME_DATA:
+                    self.assertTrue((res/f'build/game-data/{version}'/name).is_file())
 
     def test_failed_bundle_seal_preserves_previous_app(self):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         (tree/'build/shader-seed/v143').mkdir(parents=True)
         import hashlib
+        game_data(tree,'v143')
         (tree/'build/shader-seed/v143/pso_manifest.tsv').write_bytes(b'test')
         (tree/'build/shader-seed/v143/seed-manifest.json').write_text(json.dumps(dict(
-            version='v143',chain='totk-native-v6-unverified',shaders=8000,
+            version='v143',chain='totk-native-v8-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True)
@@ -274,7 +322,7 @@ class Updates(unittest.TestCase):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
-        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v112',chain='totk-native-v6-unverified',shaders=1,files={'x':'0'*64})))
+        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v112',chain='totk-native-v8-unverified',shaders=1,files={'x':'0'*64})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'synthetic payload')
         with patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'sign_app') as signing:
@@ -290,12 +338,15 @@ class Updates(unittest.TestCase):
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
         (seed/'pso_manifest.tsv').write_bytes(b'test')
-        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v6-unverified',shaders=8000,
+        game_data(tree,'v143')
+        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v8-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'new app')
         checks=[]
-        def processes(*_args,**_kwargs):
+        def processes(args,*_args,**_kwargs):
+            if args[0]=='git':   # build_app.source_commit: the commit the app records (MNGSourceCommit)
+                return SimpleNamespace(returncode=0,stdout='abc1234\n')
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
