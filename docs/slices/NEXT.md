@@ -1,94 +1,93 @@
 ---
-slice: S3.3j
+slice: S3.3k
 stateFile: docs/STATE.md
-donotCount: 41
-seededFrom: the S3.3i close (ser10 under RGBA16Float is NaN at 84.6 % of the mask; the term is 1/(depth − m_41.w))
-plannedTokens: 120000
+donotCount: 42
+seededFrom: the S3.3j close (the reciprocal is refuted; in.m_41.w is the vertex block's 1.00001, and the draw holds NaN on the menu screens)
+plannedTokens: 110000
 ---
-# Next slice — S3.3j: make the term stop producing the NaN
+# Next slice — S3.3k: name the `0 × inf` that makes the NaN
 
 ## The next action
 
-S3.3j — Stop `1/(depth − m_41.w)` from producing the NaN at the block pixels. S3.3i named the term: `_142 = 1.0/_140`
-with `_140 = _55 − in.m_41.w` is zero there, and the NaN is born after the shader's `clamp` as the `0 × inf` at
-`_184 = _180·_162`; the block pixels are 84.6 % NaN under `RGBA16Float` and were code 0 under the unorm store. Two
-terms can be out of place and one boot separates them: **`_55` is a `sample()` through the depth binding's own
-sampler**, and a filtered depth fetch returns a value interpolated across texels, which crosses a varying's value
-along a curve — while a depth fetch at the fragment's own UV should read that texel; or **`in.m_41.w` is reconstructed
-by the port** and carries a value the console's varying would not. Run the same two frames under
-`DM_NVN_FLOAT_TARGET=10` with the depth binding's filter forced to nearest (the smallest change in `nvn_mtl.m`'s
-sampler mapping), and read `analyse-i.py`'s NaN count against S3.3i's 8,361 (frame 8724, x 672–1215 y 504–911) and
-6,026 (frame ~6612).
+S3.3k — Name the `0 × inf` that actually makes the NaN. S3.3j excluded `_142 = 1/(_55 − in.m_41.w)`: the term it
+subtracts is the *vertex* block's `_m0[3].x` = 1.00001, so the denominator bottoms out at 1e-5, never zero, and a
+period-1.0 alternative is excluded by the NaN set's own depth (0 of 8,361 within 16 texels of the far plane). Two sites
+remain, and one intermediate read off the draw separates them: **`_184 = _180·_162`**, `0 × inf` only where
+`_144 = m_41.y·_142` is 0 **and** `_162 = sqrt(_148² + _144² + _146²)` is 0 — the varying's world position exactly
+(0,0,0), a value the port interpolates; or **`_411 = _355·_385`** with `_385 = 1/_379` and `_379 = fma(_355,_122,_124)`
+over the 1×1 `t22` pair, `0 × inf` when `_379 = 0` and `_355 = 0`. Do it on the map/car-select screen, where the same
+draw already holds 5,739 NaN (F6620) and 6,832 (F8548) and no race ladder is needed: write `_144`, `_162`, `_355` and
+`_379` into a spare serial for one frame and read which is NaN or infinite at a NaN pixel. Judge against S3.3j's counts
+(5,739 · 6,832 · the race's 8,361 at F8724), and name the presented frame per dump (Do-Not #41).
 
-**Closes when:** "the same two frames hold no NaN in `ser10` at the block region and the presented frame's blocks are
-gone with the rest of the frame unchanged against `g-b.png`; a guard that simply clamps `_140` removes the artifact
-without naming which term was wrong, so it may ship only after the count shows the term."
+**Closes when:** "one intermediate's per-pixel value at a NaN pixel names the site, and the presented frame's blocks are
+gone with the rest of the frame unchanged against `g-b.png`; a clamp on any single term still ships only after a count
+names it."
 
-**Ask the operator before starting a windowed boot.** `NFS_AUDIO=0` (Do-Not #38).
+**Ask the operator before starting a windowed boot.** `NFS_AUDIO=0` (Do-Not #38). Screens are reached by taking a
+`shot` and pressing on, never by a ladder copied from another run (Do-Not #35).
 
-## What S3.3i settled — do not re-derive
+## What S3.3j settled — do not re-derive
 
-- **The block pixels are a NaN, not a clamped negative.** `.babysteps/scratch/S3.3i/texdump-b/` (frame 8724,
-  `boot-s33i.log`, `g-b.png`): mask 2,010 px (presented `f-300.png` ≤ 2 where the lit world `f-4400.png` > 60) is
-  **1,700 NaN (84.6 %)**, 310 positive, **0 exact zero, 0 negative**; 2-px ring 2,153 NaN of 5,391; lit control 759
-  of 888,886 (0.09 %). Frame-wide: **8,361 NaN texels in `ser10`**, bbox x 672–1215 y 504–911.
-- **RGB only, and no infinity anywhere.** Alpha is `1.0` (`out.m_44.w = 1.0`); NaN is in R, G and B at the same
-  pixels; **0 ±inf in any channel** of either frame.
-- **The second frame repeats it**: 6,026 NaN at frame ~6612, x 672–1247 y 416–911 (`texdump-a/`).
-- **The instrument**: `DM_NVN_FLOAT_TARGET=<serial>` is 11 gated lines in `nvn_mtl.m` (off by default). `tex_desc`
-  swaps that serial's NVN `0x3D` to `RGBA16Float`; `attachment_format`, the sampling-view path in `tex_by_id` and the
-  clear's view path take the base format, because RGB10A2 over RGBA16Float is not a Metal format view — drop those
-  three and the attachment view is refused and the clear skipped. It logs `[float-target] ser=10 1920x1080 lv1
-  format 0x3d (RGB10A2Unorm) stored as RGBA16Float`. Raw header becomes `1920 1080 115 15360` (8 bytes/texel).
-- **The chain, from the translated MSL** (`…-c037c52f5abc_b.metal`): `_55 = totk_depth_fetch(fp_t_tcb_E.sample(…)).x`
-  (line 67, reg 3 = ser9 depth), `_126 = in.m_41.w`, `_140 = _55 + (−_126)`, `_142 = 1.0/_140` (111), `_144 = _128·_142`,
-  `_156 = 1.0/_144` (118), `_162 = sqrt(_158)`, `_184 = _180·_162` (139), `_228 = exp2(−|_184|)`, `_266 = _228·_246`,
-  `_355 = fma(_341,_266,_250)`, `out.m_44.xyz` from `_411 = _355·_385`. A zero `_140` ⇒ `_142` inf ⇒ `_144` inf ⇒
-  `_156` 0 and `_162` inf ⇒ **`_184 = 0 × inf` = NaN**, born after `_172 = clamp(_170,0,1)`.
-- **`1/_379` is excluded as a lone cause**: a zero `_379 = fma(_355,_122,_124)` with nonzero `_355` stores an
-  infinity, and no channel holds one. `_142`'s infinity is consumed before the store — the observed shape.
-- **The equality is inferred, not read.** The NaN set is thin and depth-valued (8,271 distinct depth values in
-  8,361 px), which a varying-vs-sampled-depth zero produces and a solid region does not; but `in.m_41.w` is a varying
-  no dump carries, and a homography fit of the set against the depth texture is not float-exact (rms 9.1e-4).
-- **The presented serial differs per run** — 1 in S3.3h, 3 in this dump, 2 in the earlier one. Name it per dump
-  (Do-Not #41); `analyse-i.py` prints the 1920×1080 candidates.
-- **Gate**: 264 tests, rc 0 at the S3.3i close.
+- **The reciprocal is not the term.** `_140 = _55 − in.m_41.w` never reaches zero: `in.m_41.w` = **1.00001** and the
+  depth is 0.9495–1.0, so `_140 ∈ [−0.0505, −1e-5]` and `_142` is finite. `_184 = _180·_162` is therefore not fed by an
+  infinite `_142`.
+- **`in.m_41.w` is the *vertex* stage's uniform.** VS: `out.m_29.w = vp_c3._m0[3].x`; `m_29` is the fragment's
+  `in.m_41`. Dump `F8548_p525374_st0_cb0_705dbaa100.bin`, 224 B, `_m0[3] = (1.00001, −0.150002, 1, 0)`.
+- **The fragment's cb reg 0 is a different block** — 96 B, `_m0[3] = (7.5, 4.21875, 0, 0)` = 1920/256 × 1080/256, the
+  reprojection scale. Reading float 12 from it answers a question about the vertex block. Do-Not #42.
+- **The filter branch is closed by the draw's own record**: `B … st1 samp reg3 sid=258 mag=0 min=2` over a one-level
+  texture — nearest — so no filtered depth fetch exists. No source change was needed, and none was made.
+- **The far plane is excluded by where the NaNs are**: at F8724, 0 of 8,361 NaN texels lie within 16 texels of the far
+  plane, and the depth under them is 0.9626–0.9928 (`.babysteps/scratch/S3.3j/probe-j-shift.py`).
+- **The same draw runs on the menu screens, and holds NaN there**: `ser10` under the float target is 5,739 NaN at F6620
+  and 6,832 at F8548 (`texdump-a/`, `texdump-b/`, `boot-s33j.log`). `.babysteps/scratch/S3.3j/analyse-j.py` prints the
+  count, the mask and the 1920×1080 candidates.
+- **The run reached no race**: the copied ladder landed on SELECT RACE LOCATION (`g01.png`) then SELECT CAR (`g02.png`).
+  It is still a usable capture — the draw is the same one.
+- **The Select Car showroom draws lit and textured**, and its presented frame carries no blocks (`g02.png`): a NaN in
+  `ser10` is not by itself visible.
+- **The chain, from `…-c037c52f5abc_b.metal`**: `_55` depth sample (line 67) · `_140 = _55 + (−_126)` · `_142 = 1/_140`
+  (111) · `_144 = _128·_142` · `_146`/`_148` · `_156 = 1/_144` (118) · `_162 = sqrt(_158)` (120) · `_170`–`_172` clamp
+  · `_180 = _178·_156` (138) · `_184 = _180·_162` (139) · `_228 = exp2(−|_184|)` · `_355` (line 239) · `_379` (245) ·
+  `_385 = 1/_379` (249) · `_411 = _355·_385` · `out.m_44.xyz` from `_411`/`_413`/`_419` + fma.
+- **Gate**: 264 tests, rc 0 at the S3.3j close.
 
 ## Withdrawn numbers — do not re-measure or re-report as new
 
-- **"the zero at the block pixels is a negative clamped by the unorm store"** — withdrawn: the float target holds 0
-  exact zeros and 0 negatives there.
-- **"65.7 % / 64.7 % code 0 is the fragment's value"** — those are the unorm store of a NaN, not the arithmetic.
-- **S3.3h's `0x7FC00000` withdrawal stands** (Do-Not #40): no NaN bit pattern is readable in `fmt=90`.
-- **The 929-px mask** is frame-specific; the same rule reads 2,010 px here. The rule carries over, not the count.
+- **"`_140 = 0` at the blocks, and the NaN is `0 × inf` at `_184` fed by `_142`"** — withdrawn: the denominator ranges
+  −0.0505 … −1e-5.
+- **"`in.m_41.w` is a reconstructed varying"** — withdrawn: it is a uniform constant written by the vertex shader.
+- **"7.5 is `in.m_41.w`"** — that is the *fragment* block's float 12 at the same register (Do-Not #42).
+- **S3.3h's `0x7FC00000` withdrawal stands** (Do-Not #40); the 929-px and 2,010-px masks are frame-specific counts.
+- The race's 8,361 (F8724) and ~6,026 (F6612) stand as counts, not as evidence for the reciprocal.
 
 ## Code and data to touch
 
 | Work | Touch |
 | --- | --- |
-| The depth binding's filter | the NVN→Metal sampler mapping in `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m` — force nearest for the depth fetch, as the one-run test |
-| The reciprocal | the translated MSL `_142` (line 111) — read it, do not hand-edit; a translator change only after the count names the term |
-| The instrument | `DM_NVN_FLOAT_TARGET=10` + `DM_NVN_SNAPRAW=1` + `DM_NVN_TEXPNG_FS=418ba45ad47d16af` + `NFS_AUDIO=0` |
-| The ruler | `.babysteps/scratch/S3.3i/analyse-i.py` (float raw; NaN / inf / exact zero / negative per channel), `run-s33i.sh` |
-| Do not | do not touch `games/totk` or `games/by3`; do not read a NaN as ±inf; do not ship a `_140` clamp before the count names the term |
+| The intermediate write | a gated temporary in the shader-cache *variant* path or a `DM_NVN_*` write in `games/nfs/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m`; the translated MSL is read, never hand-edited as the fix |
+| The instrument | `DM_NVN_FLOAT_TARGET=10` + `DM_NVN_SNAPRAW=1` + `DM_NVN_TEXPNG_FS=418ba45ad47d16af` + `DM_NVN_CBDUMP=<dir>` + `NFS_AUDIO=0` |
+| The ruler | `.babysteps/scratch/S3.3j/analyse-j.py` (NaN count, mask, presented-frame choice), `probe-j-shift.py` (distance to the far plane), `run-s33j.sh` |
+| Do not | do not touch `games/totk` or `games/by3`; do not read a NaN as ±inf; do not ship a clamp before a count names the site; do not read a stage's uniform out of the other stage's block |
 
 ## Gate, and this slice's close
 
-- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 264 tests, rc 0 at the
-  S3.3i close. Capture the real exit status, not a pipe's.
+- `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 264 tests, rc 0. Capture
+  the real exit status, not a pipe's.
 - Build from the repo into the work tree (`rsync` with `build_app.py`'s excludes, then `rm -rf NFS_build/build/obj
-  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). This slice changes source.
-- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3j/`.
+  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). This slice likely changes source.
+- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3k/`.
 - Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit
-  (Do-Not #11), append any new fault after #41 in `docs/donot.md`, and rewrite this seed under 120 lines.
+  (Do-Not #11), append any new fault after #42 in `docs/donot.md`, and rewrite this seed under 120 lines.
 
 ## Read these first, and only these
 
-- `.operator/specs/nfs-render.md` — §The black squares are the scene target's own zero · §Claim boundary
+- `.operator/specs/nfs-render.md` — §The black squares are the scene target's own zero (the S3.3j paragraph) · §Claim boundary
 - `.operator/guides/nfs-frame-dumps.md` — §Arming them · §The dump's records · §The translated shader for a key
-- `.operator/guides/running-the-nfs-boot.md` — build from the repo · headless vs windowed · the reserved-region
-  launch failure · the game slot · by cadence, not per-screen sleeps · key codes · evidence location
+- `.operator/guides/running-the-nfs-boot.md` — build from the repo · headless vs windowed · by cadence, not per-screen
+  sleeps · key codes · evidence location
 
 ## Do-Not entries that apply (#, body not quoted)
 
-#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39 · #40 · #41
+#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39 · #40 · #41 · #42
