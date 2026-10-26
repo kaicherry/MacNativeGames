@@ -1,8 +1,8 @@
 ---
 slice: S3.3k
 stateFile: docs/STATE.md
-donotCount: 42
-seededFrom: the S3.3j close (the reciprocal is refuted; in.m_41.w is the vertex block's 1.00001, and the draw holds NaN on the menu screens)
+donotCount: 43
+seededFrom: the S3.3j close (the reciprocal is refuted; in.m_41.w is the vertex block's 1.00001, and both dump frames are race frames holding NaN)
 plannedTokens: 110000
 ---
 # Next slice — S3.3k: name the `0 × inf` that makes the NaN
@@ -15,10 +15,11 @@ period-1.0 alternative is excluded by the NaN set's own depth (0 of 8,361 within
 remain, and one intermediate read off the draw separates them: **`_184 = _180·_162`**, `0 × inf` only where
 `_144 = m_41.y·_142` is 0 **and** `_162 = sqrt(_148² + _144² + _146²)` is 0 — the varying's world position exactly
 (0,0,0), a value the port interpolates; or **`_411 = _355·_385`** with `_385 = 1/_379` and `_379 = fma(_355,_122,_124)`
-over the 1×1 `t22` pair, `0 × inf` when `_379 = 0` and `_355 = 0`. Do it on the map/car-select screen, where the same
-draw already holds 5,739 NaN (F6620) and 6,832 (F8548) and no race ladder is needed: write `_144`, `_162`, `_355` and
-`_379` into a spare serial for one frame and read which is NaN or infinite at a NaN pixel. Judge against S3.3j's counts
-(5,739 · 6,832 · the race's 8,361 at F8724), and name the presented frame per dump (Do-Not #41).
+over the 1×1 `t22` pair, `0 × inf` when `_379 = 0` and `_355 = 0`. Do it on a race frame — the S3.3j recipe reaches
+one by frame ~6,600, so arm the dump after a `shot` confirms the race: F6620 and F8548 hold 5,739 and 6,832 NaN, and
+F8548's presented `f-100.png` carries the blocks. Write `_144`, `_162`, `_355` and `_379` into a spare serial for one
+frame and read which is NaN or infinite at a NaN pixel. Judge against S3.3j's counts (5,739 · 6,832 · S3.3i's race
+8,361 at F8724), and name the presented frame per dump (Do-Not #41).
 
 **Closes when:** "one intermediate's per-pixel value at a NaN pixel names the site, and the presented frame's blocks are
 gone with the rest of the frame unchanged against `g-b.png`; a clamp on any single term still ships only after a count
@@ -40,13 +41,16 @@ names it."
   texture — nearest — so no filtered depth fetch exists. No source change was needed, and none was made.
 - **The far plane is excluded by where the NaNs are**: at F8724, 0 of 8,361 NaN texels lie within 16 texels of the far
   plane, and the depth under them is 0.9626–0.9928 (`.babysteps/scratch/S3.3j/probe-j-shift.py`).
-- **The same draw runs on the menu screens, and holds NaN there**: `ser10` under the float target is 5,739 NaN at F6620
-  and 6,832 at F8548 (`texdump-a/`, `texdump-b/`, `boot-s33j.log`). `.babysteps/scratch/S3.3j/analyse-j.py` prints the
-  count, the mask and the 1920×1080 candidates.
-- **The run reached no race**: the copied ladder landed on SELECT RACE LOCATION (`g01.png`) then SELECT CAR (`g02.png`).
-  It is still a usable capture — the draw is the same one.
-- **The Select Car showroom draws lit and textured**, and its presented frame carries no blocks (`g02.png`): a NaN in
-  `ser10` is not by itself visible.
+- **Both dump frames are race frames**, not menus: `f-4400.png` is the same road-and-hillside scene at F6620 and F8548,
+  and F8548's presented `f-100.png` is the race with the car lit, the HUD and the blocks. `ser10` under the float target
+  is 5,739 NaN at F6620 and 6,832 at F8548. The presented-black mask rule reads only 212 px on `f-100.png` (80 NaN) —
+  these blocks are not near-zero in the presented image, so that 0.38 is not a refutation of anything.
+- **The Select Car showroom carries the same blocks** (`g02.png`, zoomed `crop-roof.png` at 3×): along the windshield
+  frame and roofline. It draws the car lit and textured; it is not a clean frame. The race's blocks are the same shape
+  (`crop-race-car.png` at 3× on `f-100.png`: windshield frame, roll hoops, mirror mounts).
+- **The run reached the race.** The copied ladder was still on SELECT RACE LOCATION (`g01.png`) and SELECT CAR (`g02.png`)
+  when those screenshots were taken, and passed into the race before the first arming — Do-Not #43: read the scene from
+  the dumped frame, not from a screenshot taken earlier in the same run.
 - **The chain, from `…-c037c52f5abc_b.metal`**: `_55` depth sample (line 67) · `_140 = _55 + (−_126)` · `_142 = 1/_140`
   (111) · `_144 = _128·_142` · `_146`/`_148` · `_156 = 1/_144` (118) · `_162 = sqrt(_158)` (120) · `_170`–`_172` clamp
   · `_180 = _178·_156` (138) · `_184 = _180·_162` (139) · `_228 = exp2(−|_184|)` · `_355` (line 239) · `_379` (245) ·
@@ -79,7 +83,7 @@ names it."
   NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). This slice likely changes source.
 - A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3k/`.
 - Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit
-  (Do-Not #11), append any new fault after #42 in `docs/donot.md`, and rewrite this seed under 120 lines.
+  (Do-Not #11), append any new fault after #43 in `docs/donot.md`, and rewrite this seed under 120 lines.
 
 ## Read these first, and only these
 
@@ -90,4 +94,4 @@ names it."
 
 ## Do-Not entries that apply (#, body not quoted)
 
-#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39 · #40 · #41 · #42
+#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39 · #40 · #41 · #42 · #43
