@@ -1,76 +1,77 @@
 ---
-slice: S3.3h
+slice: S3.3i
 stateFile: docs/STATE.md
-donotCount: 39
-seededFrom: the S3.3g close (the draw's five bindings are excluded; the zero is the draw's own arithmetic)
+donotCount: 40
+seededFrom: the S3.3h close (ser10 is RGB10A2Unorm; the block pixels are a stored zero and the clear is excluded)
 plannedTokens: 120000
 ---
-# Next slice — S3.3h: read `ser10` as floats at the block pixels
+# Next slice — S3.3i: name the term that makes the draw's output zero
 
 ## The next action
 
-S3.3h — Read `ser10` as float32 at the block pixels and say whether the zero is a NaN or a stored zero. S3.3g
-excluded all five sampled bindings of `418ba45ad47d16af` at the mask (A min 38, t10 mid-grey noise, t22 bright,
-depth 0.983, and the pass's own scene target `ser10` exactly 0 at 64.7 % of them), so the zero is written by the
-draw's own arithmetic or at its store. `DM_NVN_SNAPRAW=1` writes a non-depth target's raw bytes
-(`nvn_mtl.m:11379`), so one windowed boot to the race gives `ser10` as float32 at that mask: a NaN pattern
-(`0x7FC00000` and its signs) names the arithmetic — the only divisions are `1/(depth − m_41.w)` and the
-neighbourhood `rsqrt(abs(2·t10 − 1))` — while a stored `0x00000000` names the store or the blend and excludes the
-arithmetic. Arm the dump from the input file on the frame counter (Do-Not #35), and `DM_NVN_TEXPNG_FS` is not
-needed for a target. `NFS_AUDIO=0` avoids the S3.3g deadlock (Do-Not #38) and is the only switch this measurement
-may carry; if it is dropped, the `threads` dump is what names a freeze.
+S3.3i — Name the term that makes `418ba45ad47d16af`'s fragment output ≤ 0 at the block pixels. S3.3h proved the
+target cannot hold a NaN: the forward pass's `c0` is `ser10` `fmt=90`, `MTLPixelFormatRGB10A2Unorm` (NVN `0x3D`,
+`nvn_fmt_mtl.c:65`), so a NaN the draw computes is converted to 0 at the store. At a 929-pixel mask on a race frame
+(texdump frame 8751) 65.7 % of the pixels are exactly code 0 in all three channels, hard-edged, and the pass clear is
+excluded by coverage, so the zero is the draw's own output. What the target cannot separate is "the arithmetic
+produced a negative that the unorm store clamped" from "a NaN reached the output". One gated dev switch that creates
+this serial's NVN `0x3D` as `MTLPixelFormatRGBA16Float` for a single run makes the raw bytes separate them: the
+shader's `_172 = fast::clamp(_170, 0, 1)` then `_174 = log2(_172)` turns a negative `_170` into an exact 0
+(`log2(0) = -inf`, `exp2(-inf·c) = 0`), while a NaN arising **after** that clamp — `1/(depth − m_41.w)` (`_142`) or a
+weight normalisation `1/_379` — survives to the output and stores as a NaN half. Read the same mask from the same
+frame. The reading is positive-only: a NaN that enters `clamp` may flatten to 0 in either target, so an exact zero
+does not exclude a NaN upstream of `_172`.
 
-**Closes when:** "one race frame's `ser10` raw bytes at the block pixels are shown to be NaN or a stored zero, with
-the producing term named or the arithmetic excluded."
+**Closes when:** "one race frame's `ser10` at the block pixels is shown under a float target to be a NaN or an exact
+zero, with the producing term named."
 
 **Ask the operator before starting a windowed boot.**
 
-## What S3.3g settled — do not re-derive
+## What S3.3h settled — do not re-derive
 
-- **The five bindings are named, from `<key>.json` `bindings[].reg`** (`nvn_refl_from_json` keeps that order 1:1),
-  and that is the join that works. `.res.json`'s handles (14, 10, 16, 12, 34) are translation-time values that do
-  not match the frame's texture ids (Do-Not #37). At frame 8723: reg 3 = ser9 1920×1080 Depth32Float (the depth
-  fetch); reg 1 = ser44 1920×1080 (A); reg 4 = ser140 256×256 (t10, screen coords at `level(0.0)`); reg 2 = ser86
-  64×1 (C, at `float2(x, 0.0)`); reg 13 = ser67 1×1 (t22, at `(0.5, 0.5)`).
-- **All five are excluded at the block pixels** (`boot-s33g.log`, `texdump-d/`, `g-d.png`, ~F8700, mask = presented
-  black where the lit world is bright, 510 px on the car's left silhouette): `ser10` exactly 0 at 64.7 %; A mean 116
-  / min 38 / never 0; t10 mean 133 with 3.9 % of its texels near `2x−1 = 0` against 6.9 % over the whole texture;
-  t22 (255,57,0)/(255,155,0); depth mean 0.983, 25.7 % exactly at the far plane. So the zero is **not a sampled
-  texel**.
-- **The dump only records sampled textures when `DM_NVN_TEXPNG_FS=<key>` is set at launch** (`tp_note_fs` returns
-  early otherwise; Do-Not #39) — a dump without it holds the 46 colour targets and none of the bindings.
-- **The guest deadlock is a virtual-core deadlock, not load** (Do-Not #38): `h=0x1019` in
-  `_pthread_cond_wait ← audio_out_handler+0x638` owned core 2 while `h=0x1004` (affinity `mask=0x4`, core 2 alone)
-  was runnable holding a lock `h=0x1003` waited for. `NFS_AUDIO=0` avoids it; the deadlock is unfixed and queued.
-- **Arm on the frame counter, not wall clock.** `frame_now` must take the *maximum* `frame [0-9]+` in the log — a
-  `tail -1` reader matched a stale `frame 300` line and armed at the notice screen.
+- **`ser10` is `RGB10A2Unorm`** (`fmt=90` in both the pass's `P … c0` record and the texdump's `format`), from NVN
+  `0x3D` → `nvn_fmt_mtl.c:65`. 10-bit unorm has no NaN encoding; the port's mapping is faithful to the game's request.
+- **The raw is packed, not float32.** `DM_NVN_SNAPRAW=1` writes `<png>.raw` — header `width height format
+  bytesPerRow`, then 4-byte packed 10:10:10:2 (R in the LSBs). The unpack is validated: `round(code/1023·255)`
+  matches the dump's own PNG at all 2,073,600 texels, max difference 0.
+- **The mask pixels are exactly 0** (`.babysteps/scratch/S3.3h/texdump-b/`, `analyse-h.py`): 929 px (presented ≤ 2
+  where the lit world > 60), all three channels code 0 at 65.7 % (610 px), codes 1–7 at 82 px more; lit control of
+  783,767 px at mean 619/1023 and 0.06 % zero. 86 components, largest 33 px; only 1.0 % of zero pixels border a code
+  1–7 one — hard edges, so the zero is written, not an 8-bit PNG rounding.
+- **The clear is excluded by coverage:** pass 548581, `vc=4 prim=5`, `vp` and scissor `0,0,1920,1080`, `dt=0 dw=0
+  cull=0 blend=0`, and the key has no `discard_fragment`; it writes `out.m_44 = (x,y,z,1)` unconditionally.
+- **The frame is reachable without the deadlock:** `NFS_AUDIO=0`, no guest-placement retry, race up by ~F6600, dump
+  armed at F6500/F8500 and landed at 6695/8751. Reuse `.babysteps/scratch/S3.3h/run-s33h.sh`.
+- A mask count near 510 (S3.3g) is not reproducible frame to frame — the car sits differently; the rule is what
+  carries over, not the count.
 
 ## Withdrawn numbers — do not re-measure or re-report as new
 
-- **"the ≈7.5 px cluster is a 256-wide buffer"** — t10 *is* 256×256 and its screen grid is 7.5×4.2 px, but its
-  values at the mask carry no signal (3.9 % near `2x−1 = 0` against 6.9 % overall). The size match was a coincidence.
-- **"one of the five bindings returns 0"** — false at the 510-pixel mask, all five measured.
-- S3.3f's withdrawals stand (62 keys not 36; 17 of 62 discard; the 256×144 buffer unconfirmed).
+- **"a NaN or ±inf reaches an RGBA16F target"** — withdrawn. `ser10` is 10-bit unorm; a NaN cannot be stored in it.
+- **"`0x7FC00000` in `ser10`"** — unreachable in that format; the S3.3h brief was wrong on the instrument (Do-Not #40).
+- **"the zero is at 64.7 %"** — frame-specific. S3.3h's own frame reads 65.7 % of a 929-px mask.
+- S3.3g's withdrawals stand (the ≈7.5 px cluster as a 256-wide buffer; "one of the five bindings returns 0").
 
 ## Code and data to touch
 
 | Work | Touch |
 | --- | --- |
-| The target's raw bytes | `DM_NVN_SNAPRAW=1` in the dump loop (`nvn_mtl.m:11379`); no source edit |
-| The mask | `.babysteps/scratch/S3.3g/` — `mask-d.npy`, `analyse2.py`, `FINDINGS.md` (the ruler) |
-| The shader | `<work>/NFS_build/build/shader-cache/rt-totk-native-v4-unverified/418ba45ad47d16af…-c037c52f5abc_b.metal` (lines 60–101) and `<key>.json` `bindings[].reg` |
-| The switches | `DM_NVN_SNAPRAW`, `NFS_AUDIO`, `passdump`/`texdump` input commands — environment only |
-| Do not | do not touch `games/totk` or `games/by3`; do not rebuild to test a switch; do not name a cause without a capture |
+| The float target | `games/nfs/third_party/d2r_gfx/gfx/tex/nvn_fmt_mtl.c:65` and the creation path (`tex_desc`, `attachment_format` in `nvn_mtl.m`) — one env-gated switch, one serial, no other format changed |
+| The raw bytes | `DM_NVN_SNAPRAW=1` (`nvn_mtl.m:11379`), no edit |
+| The mask and ruler | `.babysteps/scratch/S3.3h/` — `texdump-b/`, `analyse-h.py`, `analyse-h-shape.py`, `run-s33h.sh` |
+| The shader | `<work>/NFS_build/build/shader-cache/rt-totk-native-v4-unverified/418ba45ad…-c037c52f5abc_b.metal` (lines 110–200) |
+| Do not | do not touch `games/totk` or `games/by3`; do not change the target's format for a second serial; do not name a cause without a capture |
 
 ## Gate, and this slice's close
 
 - `TMPDIR=/Volumes/X9BS/externalTmp/MacNativeGames python -m unittest discover -s tests` — 264 tests, exit 0 at the
-  S3.3g close. It must pass again.
+  S3.3h close. It must pass again.
 - Build from the repo into the work tree (`rsync` with `build_app.py`'s excludes, then `rm -rf NFS_build/build/obj
-  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). S3.3g changed no source.
-- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3h/`.
+  NFS_build/build/nfs-native && make runtime`), never a work-tree snapshot (Do-Not #19). S3.3i *does* change source,
+  so the rebuild is the point.
+- A capture is evidence only with its file named. Evidence goes in `.babysteps/scratch/S3.3i/`.
 - Close: advance "Where the work is", "Next action", "Completed", "In progress" and "Queued" in the same commit
-  (Do-Not #11), append any new fault after #39 in `docs/donot.md`, and rewrite this seed under 120 lines.
+  (Do-Not #11), append any new fault after #40 in `docs/donot.md`, and rewrite this seed under 120 lines.
 
 ## Read these first, and only these
 
@@ -82,4 +83,4 @@ the producing term named or the arithmetic excluded."
 
 ## Do-Not entries that apply (#, body not quoted)
 
-#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39
+#11 · #14 · #19 · #22 · #27 · #28 · #29 · #30 · #33 · #35 · #36 · #37 · #38 · #39 · #40
